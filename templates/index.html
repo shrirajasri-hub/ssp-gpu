@@ -1,0 +1,2199 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel Vision Inspection System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: #fafafa;
+            color: #212121;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* ========================================
+           COMPACT HEADER
+           ======================================== */
+        .header {
+            background: #1a237e;
+            color: white;
+            padding: 12px 30px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        .header-logo {
+            height: 28px;
+            width: auto;
+        }
+
+        .header-title {
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+
+        .header-divider {
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 18px;
+        }
+
+        .header-company {
+            font-size: 12px;
+            opacity: 0.9;
+            font-weight: 400;
+        }
+
+        /* ========================================
+           MAIN CONTAINER
+           ======================================== */
+        .main-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* ========================================
+           COMPACT SIDEBAR
+           ======================================== */
+        .sidebar {
+            width: 280px;
+            background: white;
+            border-right: 1px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            transition: width 0.3s ease;
+        }
+
+        .sidebar.collapsed {
+            width: 50px;
+        }
+
+        .sidebar-header {
+            padding: 10px 15px;
+            background: #f5f5f5;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .sidebar.collapsed .sidebar-header {
+            justify-content: center;
+            padding: 10px 8px;
+        }
+
+        .sidebar-header-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #1a237e;
+        }
+
+        .sidebar.collapsed .sidebar-header-title {
+            display: none;
+        }
+
+        .collapse-btn {
+            background: #1a237e;
+            color: white;
+            border: none;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .collapse-btn:hover {
+            background: #0d1642;
+        }
+
+        /* Tabs */
+        .tabs-container {
+            display: flex;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .sidebar.collapsed .tabs-container {
+            flex-direction: column;
+        }
+
+        .tab-button {
+            flex: 1;
+            padding: 12px 15px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+            color: #757575;
+            transition: all 0.3s ease;
+        }
+
+        .sidebar.collapsed .tab-button {
+            padding: 12px 8px;
+            font-size: 9px;
+            writing-mode: vertical-rl;
+        }
+
+        .tab-button:hover {
+            background: #fafafa;
+        }
+
+        .tab-button.active {
+            color: #1a237e;
+            border-bottom-color: #1a237e;
+            background: #f5f5f5;
+        }
+
+        /* Tab Content */
+        .tab-content-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        .sidebar.collapsed .tab-content-area {
+            display: none;
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        /* Upload Zone */
+        .upload-zone {
+            border: 2px dashed #bdbdbd;
+            border-radius: 6px;
+            padding: 30px 15px;
+            text-align: center;
+            background: #fafafa;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .upload-zone:hover {
+            border-color: #1a237e;
+            background: white;
+        }
+
+        .upload-icon {
+            font-size: 40px;
+            color: #1a237e;
+            margin-bottom: 10px;
+        }
+
+        .upload-text {
+            font-size: 12px;
+            font-weight: 500;
+            color: #212121;
+            margin-bottom: 5px;
+        }
+
+        .upload-hint {
+            font-size: 10px;
+            color: #757575;
+        }
+
+        .file-info {
+            margin-top: 12px;
+            padding: 10px;
+            background: #e8eaf6;
+            border-radius: 4px;
+            font-size: 10px;
+            color: #1a237e;
+            display: none;
+        }
+
+        /* Form */
+        .form-group {
+            margin-bottom: 12px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 11px;
+            font-weight: 600;
+            color: #212121;
+            margin-bottom: 5px;
+        }
+
+        .form-select,
+        .form-input {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 11px;
+            background: white;
+        }
+
+        .form-select:focus,
+        .form-input:focus {
+            outline: none;
+            border-color: #1a237e;
+            box-shadow: 0 0 0 2px rgba(26, 35, 126, 0.1);
+        }
+
+        .lan-camera-form {
+            background: #f5f5f5;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 10px;
+            display: none;
+        }
+
+        .lan-camera-form.active {
+            display: block;
+        }
+
+        .lan-form-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #1a237e;
+            margin-bottom: 10px;
+        }
+
+        /* Buttons */
+        .btn {
+            width: 100%;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #1a237e;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #0d1642;
+        }
+
+        .btn-secondary {
+            background: white;
+            color: #1a237e;
+            border: 1px solid #1a237e;
+        }
+
+        .btn-secondary:hover {
+            background: #1a237e;
+            color: white;
+        }
+
+        /* ========================================
+           CENTER - LIVE VIDEO (FULL FOCUS)
+           ======================================== */
+        .camera-area {
+            flex: 1;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .camera-placeholder {
+            text-align: center;
+            color: #757575;
+        }
+
+        .placeholder-icon {
+            font-size: 60px;
+            margin-bottom: 15px;
+            opacity: 0.3;
+        }
+
+        .placeholder-text {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        #videoFeed {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: none;
+        }
+
+        #overlayCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        /* ========================================
+           COMPACT RIGHT PANEL - FIT WITHOUT SCROLL
+           ======================================== */
+        .sequence-panel {
+            width: 280px;
+            background: white;
+            border-left: 1px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sequence-header {
+            background: #1a237e;
+            color: white;
+            padding: 12px 15px;
+            border-bottom: 1px solid #0d1642;
+        }
+
+        .sequence-title {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+
+        .sequence-subtitle {
+            font-size: 10px;
+            opacity: 0.85;
+        }
+
+        .sequence-list {
+            flex: 1;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        /* Compact Sequence Items - No Scroll */
+        .sequence-item {
+            background: #fafafa;
+            border-left: 4px solid #e0e0e0;
+            padding: 12px;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+
+        .sequence-item.active {
+            background: #e8eaf6;
+            border-left-color: #1a237e;
+        }
+
+        .sequence-item.completed {
+            background: #e8f5e9;
+            border-left-color: #2e7d32;
+        }
+
+        .sequence-item.missed {
+            background: #ffebee;
+            border-left-color: #c62828;
+            animation: shake 0.5s;
+        }
+
+        @keyframes shake {
+
+            0%,
+            100% {
+                transform: translateX(0);
+            }
+
+            25% {
+                transform: translateX(-6px);
+            }
+
+            75% {
+                transform: translateX(6px);
+            }
+        }
+
+        .sequence-header-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sequence-number {
+            width: 32px;
+            height: 32px;
+            background: white;
+            border: 2px solid #1a237e;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 700;
+            color: #1a237e;
+            flex-shrink: 0;
+        }
+
+        .sequence-item.completed .sequence-number {
+            background: #2e7d32;
+            border-color: #2e7d32;
+            color: white;
+        }
+
+        .sequence-item.missed .sequence-number {
+            background: #c62828;
+            border-color: #c62828;
+            color: white;
+        }
+
+        .sequence-name {
+            flex: 1;
+            font-size: 12px;
+            font-weight: 600;
+            color: #212121;
+        }
+
+        .sequence-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .badge-pending {
+            background: #e0e0e0;
+            color: #757575;
+        }
+
+        .badge-active {
+            background: #1a237e;
+            color: white;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        .badge-completed {
+            background: #2e7d32;
+            color: white;
+        }
+
+        .badge-missed {
+            background: #c62828;
+            color: white;
+        }
+
+        /* ── Sequence progress bar ───────────────────── */
+        .seq-progress-wrap {
+            position: relative;
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            margin: 6px 8px 4px 8px;
+            overflow: hidden;
+        }
+
+        .seq-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #1a237e, #42a5f5);
+            border-radius: 3px;
+            /* No CSS transition — JS animateProgress() drives width/colour smoothly */
+        }
+
+        /* Active wiping: orange pulse on the bar track */
+        .sequence-item.wiping .seq-progress-wrap {
+            background: #fff3e0;
+        }
+
+        .sequence-item.wiping .seq-progress-bar {
+            background: linear-gradient(90deg, #e65100, #ffa726) !important;
+        }
+
+        .seq-progress-label {
+            position: absolute;
+            right: 0;
+            top: -14px;
+            font-size: 9px;
+            font-weight: 700;
+            color: #1a237e;
+        }
+
+        .sequence-item.completed .seq-progress-bar {
+            background: linear-gradient(90deg, #2e7d32, #66bb6a);
+        }
+
+        .sequence-item.missed .seq-progress-bar {
+            background: #c62828;
+        }
+
+        /* ========================================
+           COMPACT FOOTER
+           ======================================== */
+        .footer {
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            padding: 8px 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 11px;
+            color: #757575;
+        }
+
+        .footer-logo {
+            height: 20px;
+            width: auto;
+        }
+
+        .footer-company {
+            font-weight: 600;
+            color: #1a237e;
+        }
+
+        /* ========================================
+           ALERT
+           ======================================== */
+        .alert {
+            position: fixed;
+            top: 80px;
+            right: 30px;
+            background: white;
+            padding: 12px 18px;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            border-left: 4px solid #2e7d32;
+            display: none;
+            z-index: 1000;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translate(-50%, -200px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translate(-50%, 0);
+                opacity: 1;
+            }
+        }
+
+        .alert.active {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: auto;
+            min-width: 300px;
+            padding: 15px 25px;
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        }
+
+        .alert.error {
+            background: #d32f2f;
+            border-left: 8px solid #b71c1c;
+            color: white;
+            animation: shake 0.5s ease;
+        }
+
+        .alert.error .alert-message {
+            color: white;
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .alert.error .alert-icon {
+            font-size: 24px;
+            color: white;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+
+        .alert-icon {
+            font-size: 18px;
+        }
+
+        .alert-message {
+            font-size: 12px;
+            font-weight: 500;
+            color: #212121;
+        }
+
+        /* Loading */
+        .loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .loading.active {
+            display: flex;
+        }
+
+        .loading-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e0e0e0;
+            border-top-color: #1a237e;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .loading-text {
+            font-size: 13px;
+            font-weight: 500;
+            color: #212121;
+        }
+
+        /* ========================================
+           CAMERA-2 OCR OVERLAY
+           ======================================== */
+        .cam2-overlay-container {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 40%;
+            z-index: 10;
+            display: none;
+            pointer-events: none;
+        }
+
+        .cam2-video-wrapper {
+            position: relative;
+            width: 100%;
+            padding-top: 56.25%;
+            background: #0a0a1e;
+            border: 1.5px solid rgba(100, 149, 255, 0.4);
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+        }
+
+        .cam2-video-wrapper img {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: contain;
+        }
+
+        .cam2-not-connected-msg {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.45);
+            font-size: 10px;
+            font-weight: 500;
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        .cam2-chip-label {
+            background: rgba(26, 35, 126, 0.92);
+            color: #fff;
+            font-size: 8px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 3px;
+            position: absolute;
+            top: 5px; left: 5px;
+            z-index: 2;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .cam2-ocr-status-bar {
+            background: rgba(8, 8, 28, 0.95);
+            color: #4fc3f7;
+            font-size: 16px;
+            font-weight: 800;
+            text-align: center;
+            padding: 8px 12px;
+            border: 2px solid rgba(100, 149, 255, 0.8);
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            letter-spacing: 0.5px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+
+        .cam2-url-section {
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px dashed #d0d5e8;
+        }
+
+        /* ════════════════════════════════════════════════════════════
+           LANDSCAPE ALERT BANNER (SEQ2 / SEQ3)
+           ════════════════════════════════════════════════════════════ */
+        #landscape-alert-banner {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 9999;
+            padding: 14px 20px;
+            text-align: center;
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: #fff;
+            box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+            transition: background 0.4s ease;
+            cursor: default;
+            user-select: none;
+        }
+
+        /* SEQ2 → Orange pulse */
+        #landscape-alert-banner.alert-seq2 {
+            display: block;
+            background: linear-gradient(90deg, #e65c00, #f9d423);
+            animation: landscape-pulse 1.2s ease-in-out infinite;
+        }
+
+        /* SEQ3 → Blue pulse */
+        #landscape-alert-banner.alert-seq3 {
+            display: block;
+            background: linear-gradient(90deg, #1a6dff, #00c6ff);
+            animation: landscape-pulse 1.2s ease-in-out infinite;
+        }
+
+        /* Captured → Green flash (3s) */
+        #landscape-alert-banner.alert-captured {
+            display: block;
+            background: linear-gradient(90deg, #11998e, #38ef7d);
+            animation: none;
+        }
+
+        @keyframes landscape-pulse {
+            0%   { opacity: 1.0; }
+            50%  { opacity: 0.75; }
+            100% { opacity: 1.0; }
+        }
+
+        /* Push content down when banner is visible */
+        body.landscape-alert-visible {
+            padding-top: 58px;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- ════════════════════════════════════════════════════════════
+         LANDSCAPE ALERT BANNER
+         Shows "PLACE PANEL IN LANDSCAPE" (English + Hindi) for SEQ2/SEQ3
+         ════════════════════════════════════════════════════════════ -->
+    <div id="landscape-alert-banner"></div>
+
+    <!-- COMPACT HEADER -->
+    <header class="header">
+        <img src="data:image/png;base64,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"
+            alt="Logo" class="header-logo">
+        <h1 class="header-title">Panel Vision Inspection System</h1>
+        <span class="header-divider">|</span>
+        <span class="header-company">Powered by</span>
+        <img src="data:image/png;base64,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"
+            alt="Vidana Logo" style="height: 18px; margin-left: 4px; vertical-align: middle;">
+        <span class="header-company" style="margin-left: 2px;">Vidana Consulting Pvt Ltd</span>
+        <span id="backendBadge" style="
+            display:none; margin-left:12px; padding:3px 10px;
+            border-radius:10px; color:#fff; font-size:11px;
+            font-weight:700; letter-spacing:0.5px;">
+        </span>
+        <span class="header-divider">|</span>
+        <span style="font-size:13px; font-weight:600; color:#fff; margin-left:10px;">
+            Panels Today: <span id="headerPanelCount" style="font-size:16px; font-weight:800; color:#4fc3f7;">0</span>
+        </span>
+        <span style="font-size:11px; margin-left:10px; color:#b0bec5;" id="headerDateDisplay">—</span>
+    </header>
+
+    <!-- MAIN CONTAINER -->
+    <div class="main-container">
+        <!-- COMPACT SIDEBAR -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-header-title">Input Source</span>
+                <button class="collapse-btn" id="collapseBtn">☰</button>
+            </div>
+
+            <div class="tabs-container">
+                <button class="tab-button active" data-tab="upload">Upload Video</button>
+                <button class="tab-button" data-tab="live">Live Camera</button>
+            </div>
+
+            <div class="tab-content-area">
+                <!-- UPLOAD VIDEO TAB -->
+                <div class="tab-pane active" id="upload-tab">
+                    <div class="upload-zone" id="uploadZone">
+                        <div class="upload-icon">📹</div>
+                        <div class="upload-text">Drop video file here</div>
+                        <div class="upload-hint">MP4, AVI, MOV (Max 500MB)</div>
+                        <input type="file" id="videoFileInput" accept="video/*" style="display: none;">
+                    </div>
+                    <div class="file-info" id="fileInfo"></div>
+                    <button class="btn btn-primary" id="processVideoBtn" style="margin-top: 15px;" disabled>Process
+                        Video</button>
+                </div>
+
+                <!-- LIVE CAMERA TAB -->
+                <div class="tab-pane" id="live-tab">
+
+                    <!-- Source toggle -->
+                    <div style="display:flex; gap:0; margin-bottom:12px;
+                                border:1px solid #1a237e; border-radius:6px;
+                                overflow:hidden;">
+                        <button id="btnLocal" onclick="switchSource('local')" style="flex:1; padding:7px 0; font-size:11px;
+                                       font-weight:600; border:none; cursor:pointer;
+                                       background:#1a237e; color:#fff;">
+                            📷 Local Camera
+                        </button>
+                        <button id="btnLan" onclick="switchSource('lan')" style="flex:1; padding:7px 0; font-size:11px;
+                                       font-weight:600; border:none; cursor:pointer;
+                                       background:#fff; color:#1a237e;">
+                            🌐 IP Camera
+                        </button>
+                    </div>
+
+                    <!-- ── LOCAL CAMERA SECTION ─────────────────── -->
+                    <div id="localSection">
+                        <div class="form-group">
+                            <label class="form-label">Camera Index</label>
+                            <select class="form-select" id="localCameraSelect">
+                                <option value="0">Camera 0</option>
+                                <option value="1">Camera 1</option>
+                                <option value="2">Camera 2</option>
+                            </select>
+                        </div>
+                        <div class="cam2-url-section">
+                            <label class="form-label">🎯 OCR Camera URL <span style="font-weight:400;color:#9e9e9e;">(Camera-2)</span></label>
+                            <input type="text" class="form-input" id="camera2UrlLocal"
+                                value="rtsp://admin:Vidana_123@192.10.70.192:554/video/live?channel=1&amp;subtype=0"
+                                placeholder="rtsp://user:pass@ip:554/path"
+                                style="font-size:10px;">
+                            <div style="font-size:9px;color:#9e9e9e;margin-top:3px;">Optional — for serial number OCR overlay</div>
+                        </div>
+                        <button class="btn btn-primary" id="startLocalBtn" style="width:100%;margin-top:12px;">▶ Start Camera</button>
+                    </div>
+
+                    <!-- ── IP CAMERA SECTION (CP Plus) ──────────── -->
+                    <div id="lanSection" style="display:none;">
+
+                        <div class="form-group">
+                            <label class="form-label">Camera IP</label>
+                            <input type="text" class="form-input" id="cameraIP" placeholder="192.168.1.100"
+                                oninput="updateRtspPreview()">
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Port</label>
+                            <input type="text" class="form-input" id="rtspPort" value="443"
+                                oninput="updateRtspPreview()">
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Username</label>
+                            <input type="text" class="form-input" id="adminUsername" placeholder="admin"
+                                oninput="updateRtspPreview()">
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Password</label>
+                            <input type="password" class="form-input" id="adminPassword" oninput="updateRtspPreview()">
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Channel</label>
+                            <select class="form-select" id="streamChannel" onchange="updateRtspPreview()">
+                                <option value="1">Channel 1</option>
+                                <option value="2">Channel 2</option>
+                                <option value="3">Channel 3</option>
+                                <option value="4">Channel 4</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Stream Type</label>
+                            <select class="form-select" id="streamType" onchange="updateRtspPreview()">
+                                <option value="0">Main Stream (Full HD)</option>
+                                <option value="1" selected>Sub Stream (Smooth)</option>
+                            </select>
+                        </div>
+
+                        <!-- RTSP URL preview — password masked -->
+                        <div id="rtspPreview" style="
+                            font-size:10px; color:#555; background:#e8eaf6;
+                            padding:6px 8px; border-radius:4px; margin-bottom:8px;
+                            word-break:break-all; display:none;"></div>
+
+                        <div class="cam2-url-section">
+                            <label class="form-label">🎯 Serial Number Camera URL <span style="font-weight:400;color:#9e9e9e;">(Camera-2)</span></label>
+                            <input type="text" class="form-input" id="camera2UrlLan"
+                                value="rtsp://admin:Vidana_123@192.10.70.192:443/video/live?channel=1&amp;subtype=0"
+                                placeholder="rtsp://user:pass@ip:443/path"
+                                style="font-size:10px;">
+                            <div style="font-size:9px;color:#9e9e9e;margin-top:3px;">Optional — for serial number detection</div>
+                        </div>
+                        <div style="display:flex; gap:6px; flex-direction:column; margin-top:10px;">
+                            <button class="btn btn-secondary" id="testConnectionBtn">
+                                🔌 Test Connection
+                            </button>
+                            <button class="btn btn-primary" id="startLanBtn">
+                                ▶ Start Camera
+                            </button>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </aside>
+
+        <!-- LIVE VIDEO - FULL SCREEN FOCUS -->
+        <main class="camera-area">
+            <div class="camera-placeholder" id="cameraPlaceholder">
+                <div class="placeholder-icon">▶</div>
+                <div class="placeholder-text">Select video source</div>
+            </div>
+            <video id="videoFeed" autoplay playsinline muted
+                style="display:none;width:100%;height:100%;object-fit:fill;"></video>
+            <img id="mjpegFeed" style="display:none;width:100%;height:100%;object-fit:fill;" alt="video feed">
+            <canvas id="overlayCanvas"></canvas>
+
+            <!-- CAMERA-2 OVERLAY — top-right corner, above main feed -->
+            <div class="cam2-overlay-container" id="cam2OverlayContainer">
+                <div class="cam2-video-wrapper">
+                    <span class="cam2-chip-label">📷 Serial Number View Port</span>
+                    <img id="cam2Feed" src="" alt="Serial Number View Port"
+                         style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:none;">
+                    <div class="cam2-not-connected-msg" id="cam2NotConnected">
+                        📵 Serial Number View Port<br>Not Connected
+                    </div>
+                </div>
+                <div class="cam2-ocr-status-bar" id="cam2OcrStatus">🔍 Searching...</div>
+            </div>
+        </main>
+
+        <!-- COMPACT SEQUENCE PANEL - NO SCROLL -->
+        <aside class="sequence-panel">
+            <div class="sequence-header">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <div>
+                        <div class="sequence-title">Serial Number</div>
+                        <!-- Sourced from Camera-2 OCR (not Camera-1) -->
+                        <div style="font-size:10px; color:#ef6c00; font-style:italic;
+                                    margin-top:2px;" id="serialCam2Hint">Waiting...</div>
+                        <div style="font-size:14px; font-weight:700; color:#9e9e9e;
+                                    letter-spacing:1px; margin-top:1px;" id="serialDisplay">—</div>
+                        <div style="font-size:10px; color:#757575; margin-top:4px;">
+                            Lead time: <span id="totalLeadTime" style="font-weight:600; color:#1565c0;">—</span>
+                        </div>
+                    </div>
+                    <!-- FIX 2: Panel count display restored — was removed but JS writes to it -->
+                    <div style="text-align:right;">
+                        <div style="font-size:9px;color:#9e9e9e;text-transform:uppercase;letter-spacing:0.5px;">Panels Today</div>
+                        <div id="panelCountDisplay"
+                             style="font-size:28px;font-weight:700;color:#1a237e;line-height:1.1;">0</div>
+                        <div id="dateDisplay" style="font-size:9px;color:#9e9e9e;margin-top:1px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sequence-list">
+                <div class="sequence-item active" id="seq1">
+                    <div class="sequence-header-row">
+                        <div class="sequence-number">1</div>
+                        <div class="sequence-name">Panel - SEQ 1</div>
+                        <span class="sequence-badge badge-active">Active</span>
+                    </div>
+                    <div class="seq-progress-wrap" id="seq1-bar-wrap">
+                        <div class="seq-progress-bar" id="seq1-bar"></div>
+                        <span class="seq-progress-label" id="seq1-pct">0%</span>
+                    </div>
+                    <div style="font-size:10px;color:#757575;text-align:right;padding:2px 4px;">
+                        ⏱ <span id="seq1-time"></span>
+                    </div>
+                </div>
+
+                <div class="sequence-item" id="seq2">
+                    <div class="sequence-header-row">
+                        <div class="sequence-number">2</div>
+                        <div class="sequence-name">Panel - SEQ 2</div>
+                        <span class="sequence-badge badge-pending">Pending</span>
+                    </div>
+                    <div class="seq-progress-wrap" id="seq2-bar-wrap" style="display:none">
+                        <div class="seq-progress-bar" id="seq2-bar"></div>
+                        <span class="seq-progress-label" id="seq2-pct">0%</span>
+                    </div>
+                    <div style="font-size:10px;color:#757575;text-align:right;padding:2px 4px;">
+                        ⏱ <span id="seq2-time"></span>
+                    </div>
+                </div>
+
+                <div class="sequence-item" id="seq3">
+                    <div class="sequence-header-row">
+                        <div class="sequence-number">3</div>
+                        <div class="sequence-name">Panel - SEQ 3</div>
+                        <span class="sequence-badge badge-pending">Pending</span>
+                    </div>
+                    <div class="seq-progress-wrap" id="seq3-bar-wrap" style="display:none">
+                        <div class="seq-progress-bar" id="seq3-bar"></div>
+                        <span class="seq-progress-label" id="seq3-pct">0%</span>
+                    </div>
+                    <div style="font-size:10px;color:#757575;text-align:right;padding:2px 4px;">
+                        ⏱ <span id="seq3-time"></span>
+                    </div>
+                </div>
+            </div>
+    </div>
+    </aside>
+    </div>
+
+
+
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <span>Powered by</span>
+        <div style="display: flex; align-items: center; gap: 6px;">
+            <img src="data:image/png;base64,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"
+                alt="Vidana Logo" class="footer-logo" style="height:18px; vertical-align:middle;">
+            <span class="footer-company">Vidana Consulting Pvt Ltd</span>
+        </div>
+    </footer>
+
+    <!-- ALERT -->
+    <div class="alert" id="alert">
+        <span class="alert-icon" id="alertIcon">✓</span>
+        <span class="alert-message" id="alertMessage"></span>
+    </div>
+
+    <!-- LOADING -->
+    <div class="loading" id="loading">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <div class="loading-text" id="loadingText">Processing...</div>
+        </div>
+    </div>
+
+    <script>
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        let statusInterval = null;
+
+        // ── Sidebar collapse ──────────────────────────────────────────
+        const collapseBtn = document.getElementById('collapseBtn') ||
+            document.getElementById('toggleSidebar');
+        if (collapseBtn) {
+            collapseBtn.addEventListener('click', () => {
+                document.getElementById('sidebar').classList.toggle('collapsed');
+            });
+        }
+
+        // ── Tab switching ─────────────────────────────────────────────
+        document.querySelectorAll('.tab-button').forEach(btn => {
+            btn.addEventListener('click', function () {
+                document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+                document.getElementById(this.dataset.tab + '-tab').classList.add('active');
+            });
+        });
+
+        // ── Upload video ──────────────────────────────────────────────
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('videoFileInput');
+
+        uploadZone.addEventListener('click', () => fileInput.click());
+        uploadZone.addEventListener('dragover', e => {
+            e.preventDefault();
+            uploadZone.style.borderColor = '#1a237e';
+        });
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.style.borderColor = '#bdbdbd';
+        });
+        uploadZone.addEventListener('drop', e => {
+            e.preventDefault();
+            uploadZone.style.borderColor = '#bdbdbd';
+            if (e.dataTransfer.files.length) handleFileSelect(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', e => {
+            if (e.target.files.length) handleFileSelect(e.target.files[0]);
+        });
+
+        function handleFileSelect(file) {
+            if (!file.type.startsWith('video/')) {
+                showAlert('Invalid file type. Please upload a video.', 'error');
+                return;
+            }
+            // Store the file for upload
+            window._pendingVideoFile = file;
+
+            const info = document.getElementById('fileInfo');
+            info.textContent = `${file.name}  (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+            info.style.display = 'block';
+            document.getElementById('processVideoBtn').disabled = false;
+        }
+
+        // ── Process (upload) video → backend → start feed ────────────
+        document.getElementById('processVideoBtn').addEventListener('click', async () => {
+            const file = window._pendingVideoFile;
+            if (!file) { showAlert('Please select a video first', 'error'); return; }
+
+            const fileMB = (file.size / 1024 / 1024).toFixed(1);
+            showLoading(`Uploading ${fileMB} MB… please wait`);
+
+            try {
+                const form = new FormData();
+                form.append('video', file);
+
+                // Use XMLHttpRequest so we can show upload progress
+                const uploadResult = await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+
+                    xhr.upload.addEventListener('progress', e => {
+                        if (e.lengthComputable) {
+                            const pct = Math.round((e.loaded / e.total) * 100);
+                            document.getElementById('loadingText').textContent =
+                                `Uploading ${fileMB} MB… ${pct}%`;
+                        }
+                    });
+
+                    xhr.addEventListener('load', () => {
+                        try {
+                            resolve(JSON.parse(xhr.responseText));
+                        } catch {
+                            reject(new Error(`Server error: ${xhr.status}`));
+                        }
+                    });
+
+                    xhr.addEventListener('error', () =>
+                        reject(new Error('Network error during upload')));
+                    xhr.addEventListener('abort', () =>
+                        reject(new Error('Upload cancelled')));
+
+                    xhr.open('POST', '/api/upload_video');
+                    xhr.send(form);
+                });
+
+                if (!uploadResult.success) {
+                    hideLoading();
+                    showAlert('Upload failed: ' + (uploadResult.error || 'unknown'), 'error');
+                    return;
+                }
+
+                // Show MJPEG feed (drops old connection first)
+                startFeed(uploadResult.backend);
+
+                // Update file info with FPS + size
+                const info = document.getElementById('fileInfo');
+                if (info) info.textContent =
+                    `${file.name}  •  ${uploadResult.file_mb} MB  •  ${uploadResult.fps} FPS`;
+
+                hideLoading();
+                showAlert(`Processing at ${uploadResult.fps} FPS — ${(uploadResult.backend || 'CPU').toUpperCase()}`, 'success');
+                document.getElementById('processVideoBtn').disabled = true;
+
+            } catch (e) {
+                hideLoading();
+                showAlert('Error: ' + e.message, 'error');
+            }
+        });
+
+        // ── Camera source toggle ──────────────────────────────────────
+        function switchSource(mode) {
+            const local = document.getElementById('localSection');
+            const lan = document.getElementById('lanSection');
+            const bLocal = document.getElementById('btnLocal');
+            const bLan = document.getElementById('btnLan');
+            if (mode === 'local') {
+                local.style.display = 'block';
+                lan.style.display = 'none';
+                bLocal.style.background = '#1a237e'; bLocal.style.color = '#fff';
+                bLan.style.background = '#fff'; bLan.style.color = '#1a237e';
+            } else {
+                local.style.display = 'none';
+                lan.style.display = 'block';
+                bLocal.style.background = '#fff'; bLocal.style.color = '#1a237e';
+                bLan.style.background = '#1a237e'; bLan.style.color = '#fff';
+            }
+        }
+
+        // ── Start Local Camera ────────────────────────────────────────
+        document.getElementById('startLocalBtn').addEventListener('click', async () => {
+            try {
+                showLoading('Starting local camera...');
+                const deviceId   = parseInt(document.getElementById('localCameraSelect').value) || 0;
+                const cam2Url    = (document.getElementById('camera2UrlLocal')?.value || '').trim();
+                const res = await fetch('/api/start_camera', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ device_id: deviceId, camera2_url: cam2Url })
+                });
+                const data = await res.json();
+                hideLoading();
+                if (data.success) {
+                    startFeed(data.backend);
+                    startCam2Feed(cam2Url);          // Camera-2 overlay (UI only)
+                    showAlert(`Camera ${deviceId} started — ${(data.backend || 'CPU').toUpperCase()}`, 'success');
+                } else {
+                    showAlert('Camera failed: ' + (data.error || 'unknown error'), 'error');
+                }
+            } catch (e) {
+                hideLoading();
+                showAlert('Error: ' + e.message, 'error');
+            }
+        });
+
+        // ── LAN camera helpers ────────────────────────────────────────
+        function buildRtspUrl() {
+            const ip = (document.getElementById('cameraIP').value || '').trim();
+            const port = (document.getElementById('rtspPort').value || '554').trim();
+            const user = (document.getElementById('adminUsername').value || '').trim();
+            const pass = (document.getElementById('adminPassword').value || '').trim();
+            const channel = (document.getElementById('streamChannel').value || '1');
+            const subtype = (document.getElementById('streamType').value || '0');
+            if (!ip) return '';
+            // CP Plus exact RTSP format:
+            // rtsp://user:pass@IP:554/video/live?channel=1&subtype=0
+            // URL-encode special chars in user/pass (e.g. @ → %40)
+            const encUser = encodeURIComponent(user);
+            const encPass = encodeURIComponent(pass);
+            const path = `/video/live?channel=${channel}&subtype=${subtype}`;
+            return (user && pass)
+                ? `rtsp://${encUser}:${encPass}@${ip}:${port}${path}`
+                : `rtsp://${ip}:${port}${path}`;
+        }
+
+        function updateRtspPreview() {
+            const el = document.getElementById('rtspPreview');
+            const url = buildRtspUrl();
+            if (url) {
+                const masked = url.replace(/:([^@]+)@/, ':●●●●@');
+                el.textContent = masked;
+                el.style.display = 'block';
+            } else {
+                el.style.display = 'none';
+            }
+        }
+
+        // ── Test Connection ───────────────────────────────────────────
+        document.getElementById('testConnectionBtn').addEventListener('click', async () => {
+            const rtspUrl = buildRtspUrl();
+            if (!rtspUrl) { showAlert('Enter camera IP first', 'error'); return; }
+
+            showLoading('Testing connection…');
+            try {
+                const res = await fetch('/api/test_connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rtsp_url: rtspUrl })
+                });
+                const data = await res.json();
+                hideLoading();
+                if (data.success) {
+                    showAlert(`✅ Connected!  ${data.width}×${data.height}  ${data.fps} FPS`, 'success');
+                } else {
+                    showAlert(`❌ Failed: ${data.error}`, 'error');
+                }
+            } catch (e) {
+                hideLoading();
+                showAlert('Test error: ' + e.message, 'error');
+            }
+        });
+
+        // ── Start LAN Camera ──────────────────────────────────────────
+        document.getElementById('startLanBtn').addEventListener('click', async () => {
+            try {
+                const rtspUrl = buildRtspUrl();
+                if (!rtspUrl) {
+                    showAlert('Please enter camera IP address', 'error');
+                    return;
+                }
+                const cam2Url = (document.getElementById('camera2UrlLan')?.value || '').trim();
+                // FIX O4c: persist URLs so they survive page refresh
+                const cam1Val = (document.getElementById('cameraUrlLan')?.value || '').trim();
+                if (cam1Val) localStorage.setItem('pv_cam1_url', cam1Val);
+                if (cam2Url) localStorage.setItem('pv_cam2_url', cam2Url);
+                showLoading('Connecting to LAN camera...');
+                const res = await fetch('/api/start_camera', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rtsp_url: rtspUrl, camera2_url: cam2Url })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    startFeed(data.backend);
+                    startCam2Feed(cam2Url);          // Camera-2 overlay (UI only)
+                    hideLoading();
+                    showAlert(`LAN Camera started — ${(data.backend || 'CPU').toUpperCase()}`, 'success');
+                } else {
+                    hideLoading();
+                    showAlert('LAN Camera failed: ' + (data.error || 'unknown error'), 'error');
+                }
+            } catch (e) {
+                hideLoading();
+                showAlert('Camera error: ' + e.message, 'error');
+            }
+        });
+
+        // ── Real-time status polling ──────────────────────────────────
+        function startStatusPolling() {
+            if (statusInterval) clearInterval(statusInterval);
+            statusInterval = setInterval(fetchStatus, 1000);
+        }
+
+        // ── Start / restart the MJPEG feed ───────────────────────────
+        function startFeed(backendName) {
+            const placeholder = document.getElementById('cameraPlaceholder');
+            const mjpeg = document.getElementById('mjpegFeed');
+            const videoEl = document.getElementById('videoFeed');
+
+            if (placeholder) placeholder.style.display = 'none';
+            if (videoEl) videoEl.style.display = 'none';
+
+            // Remove old img element and create a fresh one
+            // This forces browser to make a new HTTP request
+            const parent = mjpeg.parentNode;
+            const newImg = document.createElement('img');
+            newImg.id = 'mjpegFeed';
+            newImg.style.cssText = 'display:block;width:100%;height:100%;object-fit:fill;';
+            newImg.alt = 'video feed';
+            newImg.src = '/api/video_feed?' + Date.now();
+            parent.replaceChild(newImg, mjpeg);
+
+            // Backend badge
+            if (backendName) {
+                const be = backendName.toUpperCase();
+                const badgeEl = document.getElementById('backendBadge');
+                if (badgeEl) {
+                    badgeEl.textContent = '🤖 ' + be;
+                    badgeEl.style.background = be === 'HAILO' ? '#00c853' : '#ff9800';
+                    badgeEl.style.display = 'inline-block';
+                }
+            }
+
+            startStatusPolling();
+            if (animFrameId) cancelAnimationFrame(animFrameId);
+            animateProgress();
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/sequence_status');
+                const data = await res.json();
+                updateSequenceUI(data);
+            } catch (e) {
+                console.error('Status fetch error:', e);
+            }
+        }
+
+        // ── Progress state — declared first so all functions can use them ─
+        const displayedPct = { 1: 0, 2: 0, 3: 0 };
+        const targetPct = { 1: 0, 2: 0, 3: 0 };
+        let animFrameId = null;
+        let prevCountToday = -1;
+        let prev_reset_id = -1;
+        let prevAllSequencesDone = false;
+        let firstPollDone = false;
+        let prevMissedSeqs = new Set();
+        // Track individual sequence completions so we fire voice/alert exactly once per panel
+        let prevCompletedSeqs = new Set();
+
+        // ── Smooth progress animation loop ────────────────────────────
+        function animateProgress() {
+            for (let i = 1; i <= 3; i++) {
+                const bar = document.getElementById(`seq${i}-bar`) ||
+                    document.getElementById(`seq${i}-fill`);
+                const label = document.getElementById(`seq${i}-pct`);
+                if (!bar || !label) continue;
+
+                const diff = targetPct[i] - displayedPct[i];
+                if (Math.abs(diff) > 0.2) {
+                    displayedPct[i] += diff * 0.10;
+                } else {
+                    displayedPct[i] = targetPct[i];
+                }
+
+                const pct = displayedPct[i];
+                bar.style.width = pct.toFixed(1) + '%';
+                label.textContent = Math.round(pct) + '%';
+
+                // Colour priority:
+                //  1. completed (green)
+                //  2. wiping   (orange pulse — CSS .wiping rule is dead because
+                //     inline style always wins over class rules; we drive it here)
+                //  3. active   (blue → transitioning toward orange based on pct)
+                //  4. idle     (flat blue)
+                const item = document.getElementById(`seq${i}`) ||
+                    document.getElementById(`seq${i}-item`);
+                const isWiping   = item && item.classList.contains('wiping');
+                const isComplete = item && item.classList.contains('completed');
+
+                if (isComplete || pct >= 99.5) {
+                    bar.style.background = 'linear-gradient(90deg,#2e7d32,#66bb6a)';
+                } else if (isWiping && pct > 0) {
+                    // Orange pulse — matches the intended CSS .wiping style
+                    bar.style.background = 'linear-gradient(90deg,#e65100,#ffa726)';
+                } else if (pct > 0) {
+                    // Blue → warming toward orange as progress increases
+                    const r = Math.round(26  + (230 - 26)  * (pct / 100));
+                    const g = Math.round(35  + (81  - 35)  * (pct / 100));
+                    const b = Math.round(126 + (0   - 126) * (pct / 100));
+                    bar.style.background =
+                        `linear-gradient(90deg,rgb(${r},${g},${b}),#42a5f5)`;
+                } else {
+                    bar.style.background = 'linear-gradient(90deg,#1a237e,#42a5f5)';
+                }
+            }
+            animFrameId = requestAnimationFrame(animateProgress);
+        }
+
+        // Always start with clean bars on page load
+        function resetAllProgressBars() {
+            // Cancel any speech queued from previous panel
+            if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+
+            // Clear serial number and lead times immediately
+            const serialEl = document.getElementById('serialDisplay');
+            if (serialEl) serialEl.textContent = '—';
+            const totalEl = document.getElementById('totalLeadTime');
+            if (totalEl) totalEl.textContent = '—';
+            for (let i = 1; i <= 3; i++) {
+                const ltEl = document.getElementById(`seq${i}-time`);
+                if (ltEl) ltEl.textContent = '';
+            }
+
+            for (let i = 1; i <= 3; i++) {
+                displayedPct[i] = 0; targetPct[i] = 0;
+
+                const bar = document.getElementById(`seq${i}-bar`) || document.getElementById(`seq${i}-fill`);
+                const lbl = document.getElementById(`seq${i}-pct`);
+                const wrap = document.getElementById(`seq${i}-bar-wrap`);
+                const item = document.getElementById(`seq${i}`) || document.getElementById(`seq${i}-item`);
+                const badge = document.getElementById(`seq${i}-status`) ||
+                    (item ? item.querySelector('.sequence-badge') : null);
+
+                if (bar) {
+                    bar.style.transition = 'none';
+                    bar.style.width = '0%';
+                    bar.style.background = 'linear-gradient(90deg,#1a237e,#42a5f5)';
+                }
+                if (lbl) lbl.textContent = '0%';
+                if (wrap) wrap.style.display = 'none';
+                if (item) item.classList.remove('active', 'completed', 'missed', 'wiping');
+                if (badge) {
+                    badge.className = badge.id ? 'seq-status-badge badge-pending' : 'sequence-badge badge-pending';
+                    badge.textContent = 'Pending';
+                    badge.style.animation = '';
+                }
+            }
+            prevMissedSeqs.clear();
+            prevCompletedSeqs.clear();
+
+            // SEQ1 is ALWAYS the first to become active on a new panel.
+            // Show it as "Ready" immediately so the operator never sees a
+            // confusing 1-second "Pending" flicker between the reset and
+            // the first status poll that sets it to "Active".
+            const seq1Item  = document.getElementById('seq1');
+            const seq1Badge = seq1Item ? seq1Item.querySelector('.sequence-badge') : null;
+            if (seq1Item)  seq1Item.classList.add('active');
+            if (seq1Badge) {
+                seq1Badge.className  = 'sequence-badge badge-active';
+                seq1Badge.textContent = 'Ready';
+                seq1Badge.style.animation = 'pulse 2s infinite';
+            }
+        }
+        resetAllProgressBars();  // clean state on page load
+
+        function updateSequenceUI(data) {
+            const {
+                sequence_status, per_seq_pct,
+                serial_number, panel_count_today,
+                today_date, current_panel_name,
+                all_sequences_done, panel_reset_id,
+                wiping_active, failure_reason,
+                lead_times, total_lead_time
+            } = data;
+
+            // ── First poll: seed trackers ─────────────────────────────
+            if (!firstPollDone) {
+                firstPollDone = true;
+                prevCountToday = panel_count_today ?? 0;
+                // FIX 4: use panel_reset_id consistently (API sends both
+                // reset_id and panel_reset_id; use panel_reset_id throughout)
+                prev_reset_id = data.panel_reset_id ?? data.reset_id ?? 0;
+                prevAllSequencesDone = all_sequences_done ?? false;
+            }
+
+            // ── New panel reset ───────────────────────────────────────
+            // FIX 4: compare panel_reset_id (not data.reset_id) for consistency
+            const cur_reset_id = data.panel_reset_id ?? data.reset_id;
+            if (prev_reset_id !== -1 && prev_reset_id !== cur_reset_id) {
+                prev_reset_id = cur_reset_id;
+                prevAllSequencesDone = false;
+                resetAllProgressBars();
+                hideAlert();
+                // Reset serial display for new panel
+                const ser = document.getElementById('serialDisplay');
+                if (ser) { ser.innerText = '🔍 Searching...'; ser.style.color = '#9e9e9e'; }
+                const hint = document.getElementById('serialCam2Hint');
+                if (hint) { hint.innerText = 'Searching...'; hint.style.color = '#9e9e9e'; }
+                setCam2OcrStatus('waiting');
+                setCam2ViewportColor('');
+            } else if (prev_reset_id === -1) {
+                prev_reset_id = cur_reset_id;
+            }
+
+            if (panel_count_today > prevCountToday) {
+                prevCountToday = panel_count_today;
+            }
+
+            // ── Update target percentages ─────────────────────────────
+            if (per_seq_pct) {
+                for (let i = 1; i <= 3; i++) {
+                    const sv = parseFloat(per_seq_pct[String(i)] ?? 0);
+                    if (sv < targetPct[i] && !all_sequences_done) {
+                        targetPct[i] = sv; displayedPct[i] = sv;
+                        const bar = document.getElementById(`seq${i}-bar`) ||
+                            document.getElementById(`seq${i}-fill`);
+                        if (bar) {
+                            bar.style.transition = 'none';
+                            bar.style.width = sv + '%';
+                        }
+                    } else if (sv > targetPct[i]) {
+                        targetPct[i] = sv;
+                    }
+                }
+            }
+
+            // ── Update each sequence card ─────────────────────────────
+            for (let i = 1; i <= 3; i++) {
+                const status = sequence_status ? sequence_status[String(i)] : null;
+                const isDetected = (current_panel_name === `panel_seq${i}`);
+
+                const item = document.getElementById(`seq${i}`) ||
+                    document.getElementById(`seq${i}-item`);
+                const barWrap = document.getElementById(`seq${i}-bar-wrap`);
+                const barFill = document.getElementById(`seq${i}-bar`) ||
+                    document.getElementById(`seq${i}-fill`);
+                const lbl = document.getElementById(`seq${i}-pct`);
+                const badge = document.getElementById(`seq${i}-status`) ||
+                    (item ? item.querySelector('.sequence-badge') : null);
+
+                if (item) item.classList.remove('active', 'completed', 'missed', 'wiping');
+                if (badge) badge.style.animation = '';
+
+                const setBadge = (cls, text, anim) => {
+                    if (!badge) return;
+                    badge.className = badge.id
+                        ? 'seq-status-badge ' + cls
+                        : 'sequence-badge ' + cls;
+                    badge.textContent = text;
+                    if (anim) badge.style.animation = anim;
+                };
+
+                if (status === 'wiping') {
+                    if (item) item.classList.add('active', 'wiping');
+                    setBadge('badge-active', '⟳ Wiping...', 'pulse 1s infinite');
+                    if (barWrap) barWrap.style.display = 'block';
+
+                } else if (status === 'active') {
+                    // Also treat as 'wiping' if backend's wiping_active flag is set
+                    // for this sequence (catches the 1-poll lag between flag and status)
+                    const alsoWiping = wiping_active && (i === (data.current_sequence || 0));
+                    if (alsoWiping) {
+                        if (item) item.classList.add('active', 'wiping');
+                        setBadge('badge-active', '⟳ Wiping...', 'pulse 1s infinite');
+                    } else {
+                        if (item) item.classList.add('active');
+                        setBadge('badge-active', isDetected ? '● Detected' : 'Active');
+                    }
+                    if (barWrap) barWrap.style.display = 'block';
+
+                } else if (status === 'completed') {
+                    if (item) item.classList.add('completed');
+                    setBadge('badge-completed', 'Completed ✓');
+                    targetPct[i] = 100; displayedPct[i] = 100;
+                    if (barFill) {
+                        barFill.style.transition = 'none';
+                        barFill.style.width = '100%';
+                        barFill.style.background = '#2e7d32';
+                    }
+                    if (lbl) lbl.textContent = '100%';
+                    if (barWrap) barWrap.style.display = 'block';
+
+                    // ── Per-sequence completion voice + alert (fires once per panel) ──
+                    if (!prevCompletedSeqs.has(i)) {
+                        prevCompletedSeqs.add(i);
+                        if (i === 1) {
+                            playBeep();
+                            speakAlert(
+                                'Sequence 1 complete — please flip panel to Sequence 2!',
+                                'अनुक्रम 1 पूर्ण — पैनल को अनुक्रम 2 पर पलटें!'
+                            );
+                            showAlert('✅ SEQ 1 Done — Flip panel to SEQ 2 now!', 'success');
+                        } else if (i === 2) {
+                            playBeep();
+                            speakAlert(
+                                'Sequence 2 complete — please flip panel to Sequence 3!',
+                                'अनुक्रम 2 पूर्ण — पैनल को अनुक्रम 3 पर पलटें!'
+                            );
+                            showAlert('✅ SEQ 2 Done — Flip panel to SEQ 3 now!', 'success');
+                        }
+                        // SEQ3 completion is handled by the all_sequences_done banner below
+                    }
+
+                } else if (status === 'missed') {
+                    if (item) item.classList.add('missed');
+                    setBadge('badge-missed', 'Missed ✕');
+                    if (barWrap) barWrap.style.display = 'block';
+                    // Voice + alert — only fires ONCE per panel per sequence
+                    if (!prevMissedSeqs.has(i)) {
+                        prevMissedSeqs.add(i);
+                        playBeep();
+                        speakAlert(
+                            `Warning! Sequence ${i} was missed. Please check the panel!`,
+                            `चेतावनी! अनुक्रम ${i} छूट गया। पैनल की जांच करें!`
+                        );
+                        showAlert(
+                            `⚠️ SEQ ${i} MISSED — Please re-inspect this panel`,
+                            'error');
+                    }
+
+                } else {
+                    // pending — FIX 3: never show '● Detected' when sequence is pending
+                    setBadge('badge-pending', 'Pending');
+                    if (barWrap) barWrap.style.display = 'none';
+                    targetPct[i] = 0; displayedPct[i] = 0;
+                }
+            }
+
+            // ── All sequences done ────────────────────────────────────
+            if (all_sequences_done && !prevAllSequencesDone) {
+                prevAllSequencesDone = true;
+                playBeep();
+                speakAlert(
+                    'Panel inspection complete! All sequences finished. PDF report generating.',
+                    'पैनल निरीक्षण पूर्ण! सभी अनुक्रम समाप्त। PDF रिपोर्ट बन रही है।'
+                );
+                showAlert('✅ Panel inspection complete! PDF generating…', 'success');
+            }
+
+            // ── Serial number display ─────────────────────────────────
+            const serialEl = document.getElementById('serialDisplay');
+            if (serialEl) {
+                const sn = data.serial_number;
+                const partial = data.partial_serial;
+                if (sn && !['UNKNOWN','Searching...','Reading...'].includes(sn)) {
+                    serialEl.innerText = sn;
+                    serialEl.style.color = '#00e676';
+                    serialEl.style.fontWeight = 'bold';
+                } else if (partial && partial.length >= 3) {
+                    serialEl.innerText = '\uD83D\uDD0D ' + partial + '...';
+                    serialEl.style.color = '#ffd740';
+                    serialEl.style.fontWeight = 'normal';
+                } else if (sn === 'Reading...') {
+                    serialEl.innerText = '\uD83D\uDCF7 Frame captured...';
+                    serialEl.style.color = '#64b5f6';
+                    serialEl.style.fontWeight = 'normal';
+                } else {
+                    serialEl.innerText = '\u2014 Searching...';
+                    serialEl.style.color = '#9e9e9e';
+                    serialEl.style.fontWeight = 'normal';
+                }
+            }
+            const cam2HintEl = document.getElementById('serialCam2Hint');
+            if (cam2HintEl) {
+                const sn = data.serial_number;
+                if (sn && !['UNKNOWN','Searching...','Reading...'].includes(sn)) {
+                    cam2HintEl.innerText = '\u2705 Detection Complete';
+                    cam2HintEl.style.color = '#00e676';
+                } else if (data.partial_serial) {
+                    cam2HintEl.innerText = `Reading: ${data.partial_serial}...`;
+                    cam2HintEl.style.color = '#ffd740';
+                } else {
+                    cam2HintEl.innerText = 'Searching via Camera-2';
+                    cam2HintEl.style.color = '#9e9e9e';
+                }
+                cam2HintEl.style.display = 'block';
+            }
+
+            // ── Lead times display ────────────────────────────────────
+            for (let i = 1; i <= 3; i++) {
+                const ltEl = document.getElementById(`seq${i}-time`);
+                if (ltEl && data.seq_time) {
+                    const t = data.seq_time[String(i)];
+                    ltEl.textContent = (t != null && t > 0) ? `${Math.round(t)}s` : '';
+                }
+            }
+            const totalEl = document.getElementById('totalLeadTime');
+            if (totalEl) {
+                if (data.total_time != null && data.total_time > 0) {
+                    const m = Math.floor(data.total_time / 60);
+                    const s = Math.round(data.total_time % 60);
+                    totalEl.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+                } else {
+                    totalEl.textContent = all_sequences_done ? '' : 'In progress...';
+                }
+            }
+
+            // ── Failure reason — show in sidebar alert, NOT in feed ───
+            if (failure_reason && !prevMissedSeqs.size) {
+                showAlert(`⚠️ ${failure_reason}`, 'error');
+            }
+
+            // ── Panel count ───────────────────────────────────────────
+            const countEl = document.getElementById('panelCountDisplay');
+            if (countEl) countEl.textContent = panel_count_today ?? 0;
+            // Also sync the header badge (was never updated — always showed 0)
+            const headerCount = document.getElementById('headerPanelCount');
+            if (headerCount) headerCount.textContent = panel_count_today ?? 0;
+
+            const dateEl = document.getElementById('dateDisplay');
+            if (dateEl) dateEl.textContent = today_date ?? '';
+        }
+
+
+        // ── Audio helpers ─────────────────────────────────────────────
+        function playBeep() {
+            const osc = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            osc.connect(gain);
+            gain.connect(audioContext.destination);
+            osc.frequency.value = 800;
+            osc.type = 'sine';
+            gain.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+            osc.start(audioContext.currentTime);
+            osc.stop(audioContext.currentTime + 0.5);
+        }
+
+        function speakAlert(msgEn, msgHi) {
+            if (!('speechSynthesis' in window)) return;
+            // Speak English first
+            const uEn = new SpeechSynthesisUtterance(msgEn);
+            uEn.lang = 'en-IN';
+            uEn.rate = 1.0;
+            uEn.volume = 0.9;
+            window.speechSynthesis.speak(uEn);
+            // Then Hindi if provided
+            if (msgHi) {
+                const uHi = new SpeechSynthesisUtterance(msgHi);
+                uHi.lang = 'hi-IN';
+                uHi.rate = 0.95;
+                uHi.volume = 0.9;
+                window.speechSynthesis.speak(uHi);
+            }
+        }
+
+        // ── UI helpers ────────────────────────────────────────────────
+        function hideAlert() {
+            const el = document.getElementById('alert');
+            if (el) el.classList.remove('active', 'error');
+        }
+
+        function showAlert(msg, type = 'success') {
+            const alert = document.getElementById('alert');
+            document.getElementById('alertIcon').textContent = type === 'success' ? '✓' : '✕';
+            document.getElementById('alertMessage').textContent = msg;
+            alert.classList.remove('error');
+            if (type === 'error') alert.classList.add('error');
+            alert.classList.add('active');
+            setTimeout(() => alert.classList.remove('active'), 3000);
+        }
+
+        function showLoading(text) {
+            document.getElementById('loadingText').textContent = text;
+            document.getElementById('loading').classList.add('active');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').classList.remove('active');
+        }
+
+        // ── Init ──────────────────────────────────────────────────────
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!animFrameId) animateProgress();
+
+            // FIX O4a: restore camera URLs from localStorage so fields are
+            // pre-filled after every page refresh.
+            const _s1 = localStorage.getItem('pv_cam1_url');
+            const _s2 = localStorage.getItem('pv_cam2_url');
+            if (_s1) { const e = document.getElementById('cameraUrlLan');    if (e && !e.value) e.value = _s1; }
+            if (_s2) {
+                ['camera2UrlLan','camera2UrlLocal'].forEach(id => {
+                    const e = document.getElementById(id); if (e && !e.value) e.value = _s2;
+                });
+            }
+
+            // FIX 1+5: Start polling immediately on page load.
+            startStatusPolling();
+
+            // FIX O4b: auto-reconnect both feeds using server-side state.
+            // cam2_url comes from /api/sequence_status (added by FIX O3).
+            // Pass it (or any non-empty string when cam2_active) to bypass
+            // the empty-URL guard in startCam2Feed — the actual MJPEG stream
+            // is always /api/video_feed_cam2 regardless of the RTSP URL.
+            (async () => {
+                try {
+                    const r = await fetch('/api/sequence_status');
+                    const d = await r.json();
+                    if (d.backend) {
+                        startFeed(d.backend);
+                        const c2 = d.cam2_url || _s2 || '';
+                        if (d.cam2_active || c2) startCam2Feed(c2 || 'configured');
+                    }
+                } catch (_) {}
+            })();
+        });
+
+        // ═══════════════════════════════════════════════════════════════
+        // CAMERA-2 OCR OVERLAY HELPERS  (UI only — no OCR logic here)
+        // ═══════════════════════════════════════════════════════════════
+
+        /**
+         * Start (or reset) the Camera-2 overlay feed.
+         * @param {string} cam2Url  RTSP URL for Camera-2, empty string = not configured.
+         */
+        function startCam2Feed(cam2Url) {
+            const overlay      = document.getElementById('cam2OverlayContainer');
+            const notConnected = document.getElementById('cam2NotConnected');
+            if (overlay) overlay.style.display = 'block';
+            if (!cam2Url) {
+                if (notConnected) notConnected.style.display = 'block';
+                const oldImg = document.getElementById('cam2Feed');
+                if (oldImg) oldImg.style.display = 'none';
+                setCam2OcrStatus('not_connected');
+                return;
+            }
+            if (notConnected) notConnected.style.display = 'none';
+            const oldImg = document.getElementById('cam2Feed');
+            const wrapper = oldImg ? oldImg.parentNode : null;
+            if (!wrapper) return;
+            const newImg = document.createElement('img');
+            newImg.id = 'cam2Feed';
+            newImg.alt = 'Camera 2 OCR Feed';
+            newImg.style.cssText =
+                'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:block;';
+            newImg.onerror = () => {
+                newImg.style.display = 'none';
+                if (notConnected) notConnected.style.display = 'block';
+                setCam2OcrStatus('not_connected');
+            };
+            newImg.onload = () => {
+                if (notConnected) notConnected.style.display = 'none';
+                setCam2OcrStatus('waiting');
+            };
+            newImg.src = '/api/video_feed_cam2?' + Date.now();
+            wrapper.replaceChild(newImg, oldImg);
+            setCam2OcrStatus('waiting');
+            startCam2Polling();
+        }
+
+        // ── Camera-2 status polling (500ms) ─────────────────────────
+        let cam2PollInterval = null;
+        let cam2LastState    = '';
+        let cam2RedTimer     = null;
+
+        function startCam2Polling() {
+            if (cam2PollInterval) clearInterval(cam2PollInterval);
+            cam2LastState = '';
+            cam2PollInterval = setInterval(pollCam2Status, 500);
+        }
+
+        async function pollCam2Status() {
+            try {
+                const res  = await fetch('/api/cam2_status');
+                const data = await res.json();
+                if (!data.available) {
+                    setCam2OcrStatus('not_connected');
+                    return;
+                }
+
+                const camState  = data.state;
+                const serial    = data.serial;
+                const partial   = data.partial;
+                const ocrStatus = data.ocr_status || '';
+
+                if (camState === 'captured' && cam2LastState !== 'captured' && cam2LastState !== 'found') {
+                    // ✅ GREEN INSTANTLY — frame captured, OCR running in background
+                    cam2LastState = 'captured';
+                    setCam2OcrStatus('captured');
+                    setCam2ViewportColor('green');
+                    // Voice alert immediately
+                    speakVoiceAlert('Frame captured! Reading serial number...');
+                    // Keep polling so we get the serial when Phase-2 finishes
+                    // (do NOT stop polling yet)
+
+                } else if (camState === 'found' && serial && serial !== 'Reading...' && cam2LastState !== 'found') {
+                    // ✅ SERIAL CONFIRMED — Phase-2 OCR complete
+                    cam2LastState = 'found';
+                    setCam2OcrStatus('detected', serial);
+                    setCam2ViewportColor('green');
+
+                    // Update serial display in sidebar
+                    const serialEl = document.getElementById('serialDisplay');
+                    if (serialEl) {
+                        serialEl.textContent = serial;
+                        serialEl.style.color = '#00e676';
+                    }
+                    const hintEl = document.getElementById('serialCam2Hint');
+                    if (hintEl) {
+                        hintEl.textContent = 'Serial Confirmed ✓';
+                        hintEl.style.color = '#00e676';
+                    }
+
+                    // Update the status bar to show the actual serial
+                    const statusEl = document.getElementById('cam2OcrStatus');
+                    if (statusEl) {
+                        statusEl.textContent = `✅ Serial: ${serial}`;
+                        statusEl.style.color = '#00e676';
+                    }
+
+                    // Voice alert with serial
+                    speakVoiceAlert('Serial number confirmed: ' + serial);
+                    // Stop polling now
+                    if (cam2PollInterval) clearInterval(cam2PollInterval);
+
+                } else if (camState === 'captured' && serial && serial !== 'Reading...') {
+                    // Edge case: captured + serial arrived in same poll
+                    cam2LastState = 'found';
+                    setCam2OcrStatus('detected', serial);
+                    setCam2ViewportColor('green');
+                    const serialEl = document.getElementById('serialDisplay');
+                    if (serialEl) { serialEl.textContent = serial; serialEl.style.color = '#00e676'; }
+                    if (cam2PollInterval) clearInterval(cam2PollInterval);
+
+                } else if (camState === 'scanning') {
+                    // 🟡 YELLOW — scanning in progress, show live OCR status
+                    setCam2ViewportColor('yellow');
+
+                    const el = document.getElementById('cam2OcrStatus');
+                    if (el) {
+                        // Map raw OCR status strings to friendly display text
+                        const statusMap = {
+                            'Show serial in box':    { text: '📦 Place serial in ROI box',   color: '#4fc3f7' },
+                            'Hold steady':           { text: '✋ Hold steady — reading...',   color: '#ffd740' },
+                            'Capturing...':          { text: '📸 Capturing frame...',          color: '#ffd740' },
+                            'Processing...':         { text: '⚙️ Processing OCR...',           color: '#ffd740' },
+                            'Serial not clear - retry': { text: '⚠️ Not clear — retry',        color: '#ff7043' },
+                        };
+                        const mapped = statusMap[ocrStatus];
+                        if (mapped) {
+                            el.textContent  = mapped.text;
+                            el.style.color  = mapped.color;
+                        } else if (partial && partial.length >= 3) {
+                            el.textContent = `📖 Reading: ${partial}...`;
+                            el.style.color = '#ffd740';
+                        } else {
+                            el.textContent = '🔍 Scanning serial number...';
+                            el.style.color = '#4fc3f7';
+                        }
+                    }
+
+                    // If we just got partial, show it in hint area
+                    const hintEl = document.getElementById('serialCam2Hint');
+                    if (hintEl) {
+                        if (partial && partial.length >= 3) {
+                            hintEl.textContent = `Reading: ${partial}...`;
+                            hintEl.style.color = '#ef6c00';
+                        } else {
+                            hintEl.textContent = 'Scanning...';
+                            hintEl.style.color = '#9e9e9e';
+                        }
+                    }
+
+                } else if (camState === 'idle') {
+                    setCam2OcrStatus('waiting');
+                    setCam2ViewportColor('');
+                    const hintEl = document.getElementById('serialCam2Hint');
+                    if (hintEl) { hintEl.textContent = 'Waiting...'; hintEl.style.color = '#9e9e9e'; }
+                }
+            } catch (e) { /* network errors ignored */ }
+        }
+
+        function triggerCam2RedAlert(msg) {
+            // 🔴 RED for 2s — panel not positioned correctly
+            setCam2ViewportColor('red');
+            setCam2OcrStatus('failed');
+            speakVoiceAlert(msg || 'Please position panel serial number under camera 2');
+            if (cam2RedTimer) clearTimeout(cam2RedTimer);
+            cam2RedTimer = setTimeout(() => {
+                setCam2ViewportColor('yellow');
+                setCam2OcrStatus('detecting');
+            }, 2000);
+        }
+
+        function setCam2ViewportColor(color) {
+            const wrapper = document.querySelector('.cam2-video-wrapper');
+            if (!wrapper) return;
+            const colors = {
+                green:  '0 0 0 4px #00e676, 0 0 20px #00e67688',
+                yellow: '0 0 0 4px #ffd740, 0 0 20px #ffd74088',
+                red:    '0 0 0 4px #ff1744, 0 0 20px #ff174488',
+            };
+            wrapper.style.boxShadow = colors[color] || '';
+            wrapper.style.transition = 'box-shadow 0.3s ease';
+        }
+
+        function speakVoiceAlert(text) {
+            try {
+                const u = new SpeechSynthesisUtterance(text);
+                u.rate = 1.0; u.volume = 1.0;
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.speak(u);
+            } catch(e) {}
+        }
+
+        /**
+         * Update OCR status label.
+         * States: 'waiting' | 'detecting' | 'detected' | 'not_connected' | 'failed'
+         */
+        function setCam2OcrStatus(statusKey, serial) {
+            const el = document.getElementById('cam2OcrStatus');
+            if (!el) return;
+            const map = {
+                waiting:       { text: '🔍 Searching...',                       color: '#4fc3f7' },
+                detecting:     { text: '📸 Capturing...',                        color: '#ffd740' },
+                captured:      { text: '✅ Frame captured — reading serial...',  color: '#00e676' },
+                detected:      { text: `✅ Captured: ${serial || ''}`,           color: '#00e676' },
+                not_connected: { text: '📵 OCR Camera Not Connected',            color: '#ef5350' },
+                failed:        { text: '⚠️ Position panel serial under cam',    color: '#ff7043' },
+            };
+            const entry = map[statusKey] || { text: statusKey, color: '#4fc3f7' };
+            el.textContent = entry.text;
+            el.style.color  = entry.color;
+        }
+
+        /* ════════════════════════════════════════════════════════════
+           LANDSCAPE ALERT MANAGER
+           Listens for landscape_alert from /api/sequence_status
+           Shows orange (SEQ2) / blue (SEQ3) / green (captured) banner
+           ════════════════════════════════════════════════════════════ */
+        (function () {
+            "use strict";
+            const banner    = document.getElementById("landscape-alert-banner");
+            const body      = document.body;
+            let prevAlert   = "";
+            const MESSAGES = {
+                "seq2":     "📐 SEQ 2 — PLACE PANEL IN LANDSCAPE POSITION &nbsp;|&nbsp; पैनल को landscape में रखें",
+                "seq3":     "📐 SEQ 3 — PLACE PANEL IN LANDSCAPE POSITION &nbsp;|&nbsp; पैनल को landscape में रखें",
+                "captured": "✅ CAPTURED! — SEQ COMPLETE &nbsp;|&nbsp; फोटो ले लिया ✓"
+            };
+            const CLASS_MAP = {
+                "seq2":     "alert-seq2",
+                "seq3":     "alert-seq3",
+                "captured": "alert-captured"
+            };
+            function updateBanner(alert) {
+                if (alert === prevAlert) return;
+                prevAlert = alert;
+                banner.className = "";
+                body.classList.remove("landscape-alert-visible");
+                if (alert && MESSAGES[alert]) {
+                    banner.innerHTML  = MESSAGES[alert];
+                    banner.className  = CLASS_MAP[alert] || "";
+                    body.classList.add("landscape-alert-visible");
+                }
+            }
+            const _origFetch = window.fetch;
+            window.fetch = function (url, opts) {
+                return _origFetch.apply(this, arguments).then(function (resp) {
+                    if (typeof url === "string" && url.indexOf("sequence_status") !== -1) {
+                        resp.clone().json().then(function (data) {
+                            updateBanner(data.landscape_alert || "");
+                        }).catch(function () {});
+                    }
+                    return resp;
+                });
+            };
+            const _origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function (method, url) {
+                this._panelVisionUrl = url;
+                return _origOpen.apply(this, arguments);
+            };
+            const _origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function () {
+                const xhr = this;
+                if (xhr._panelVisionUrl && xhr._panelVisionUrl.indexOf("sequence_status") !== -1) {
+                    xhr.addEventListener("load", function () {
+                        try {
+                            const data = JSON.parse(xhr.responseText);
+                            updateBanner(data.landscape_alert || "");
+                        } catch (e) {}
+                    });
+                }
+                return _origSend.apply(this, arguments);
+            };
+        })();
+    </script>
+</body>
+
+</html>
