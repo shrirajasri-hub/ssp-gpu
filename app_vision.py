@@ -3978,28 +3978,37 @@ class _TLSRTSPCapture:
                 # and produced 5-20 s of visual lag.
                 bufsize=frame_size)
 
-            # REDUCED timeout: 12 s (was 30 s)
-            r, _, _ = select.select([proc.stdout], [], [], 12)
-            if r:
-                raw = proc.stdout.read(frame_size)
-                if len(raw) == frame_size:
-                    self._proc   = proc
-                    self._opened = True
-                    frame = np.frombuffer(raw, dtype=np.uint8
-                            ).reshape((self._dec_h, self._dec_w, 3)).copy()
-                    with self._lock:
-                        self._frame_q = [frame]
-                    print(f'[RTSP] ✅ native rtsps {self._dec_w}x{self._dec_h}')
-                    
-                    def consume_stderr(p):
-                        while self._running and p.poll() is None:
-                            try:
-                                line = p.stderr.readline()
-                                if not line: break
-                            except: break
-                    threading.Thread(target=consume_stderr, args=(proc,), daemon=True).start()
-                    threading.Thread(target=self._ffmpeg_frame_reader, daemon=True).start()
-                    return True
+            # Read first frame with 12s timeout (Windows-safe: no select())
+            first_frame = [None]
+            def read_first():
+                try:
+                    raw = proc.stdout.read(frame_size)
+                    if len(raw) == frame_size:
+                        first_frame[0] = raw
+                except: pass
+            t = threading.Thread(target=read_first, daemon=True)
+            t.start()
+            t.join(timeout=12)
+            
+            if first_frame[0] is not None:
+                raw = first_frame[0]
+                self._proc   = proc
+                self._opened = True
+                frame = np.frombuffer(raw, dtype=np.uint8
+                        ).reshape((self._dec_h, self._dec_w, 3)).copy()
+                with self._lock:
+                    self._frame_q = [frame]
+                print(f'[RTSP] ✅ native rtsps {self._dec_w}x{self._dec_h}')
+                
+                def consume_stderr(p):
+                    while self._running and p.poll() is None:
+                        try:
+                            line = p.stderr.readline()
+                            if not line: break
+                        except: break
+                threading.Thread(target=consume_stderr, args=(proc,), daemon=True).start()
+                threading.Thread(target=self._ffmpeg_frame_reader, daemon=True).start()
+                return True
             proc.kill()
             err = proc.stderr.read(500).decode('utf-8', errors='ignore')
             print(f'[RTSP] native rtsps failed: {err[-150:]}')
@@ -4057,28 +4066,37 @@ class _TLSRTSPCapture:
                 # REDUCED: was 4 MB buffer
                 bufsize=frame_size)
 
-            # REDUCED timeout: 12 s (was 30 s)
-            r, _, _ = select.select([proc.stdout], [], [], 12)
-            if r:
-                raw = proc.stdout.read(frame_size)
-                if len(raw) == frame_size:
-                    self._proc   = proc
-                    self._opened = True
-                    frame = np.frombuffer(raw, dtype=np.uint8
-                            ).reshape((self._dec_h, self._dec_w, 3)).copy()
-                    with self._lock:
-                        self._frame_q = [frame]
-                    print(f'[RTSP] ✅ ffmpeg proxy {self._dec_w}x{self._dec_h} ~14fps')
-                    
-                    def consume_stderr(p):
-                        while self._running and p.poll() is None:
-                            try:
-                                line = p.stderr.readline()
-                                if not line: break
-                            except: break
-                    threading.Thread(target=consume_stderr, args=(proc,), daemon=True).start()
-                    threading.Thread(target=self._ffmpeg_frame_reader, daemon=True).start()
-                    return True
+            # Read first frame with 12s timeout (Windows-safe: no select())
+            first_frame = [None]
+            def read_first():
+                try:
+                    raw = proc.stdout.read(frame_size)
+                    if len(raw) == frame_size:
+                        first_frame[0] = raw
+                except: pass
+            t = threading.Thread(target=read_first, daemon=True)
+            t.start()
+            t.join(timeout=12)
+            
+            if first_frame[0] is not None:
+                raw = first_frame[0]
+                self._proc   = proc
+                self._opened = True
+                frame = np.frombuffer(raw, dtype=np.uint8
+                        ).reshape((self._dec_h, self._dec_w, 3)).copy()
+                with self._lock:
+                    self._frame_q = [frame]
+                print(f'[RTSP] ✅ ffmpeg proxy {self._dec_w}x{self._dec_h} ~14fps')
+                
+                def consume_stderr(p):
+                    while self._running and p.poll() is None:
+                        try:
+                            line = p.stderr.readline()
+                            if not line: break
+                        except: break
+                threading.Thread(target=consume_stderr, args=(proc,), daemon=True).start()
+                threading.Thread(target=self._ffmpeg_frame_reader, daemon=True).start()
+                return True
             proc.kill()
             err = proc.stderr.read(500).decode('utf-8', errors='ignore')
             print(f'[RTSP] ffmpeg proxy failed: {err[-150:]}')
@@ -4095,12 +4113,7 @@ class _TLSRTSPCapture:
 
         while self._running and self._proc:
             try:
-                readable, _, _ = select.select([self._proc.stdout], [], [], 8.0)
-                if not readable:
-                    print('[RTSP] ffmpeg reader timed out (8s) — reconnecting')
-                    break
-
-                # Read exactly one full frame — sequential read, never partial.
+                # Read exactly one full frame — sequential read, never partial (no select() on Windows).
                 # Do NOT use non-blocking drain: partial reads desync frame
                 # boundaries → pixels from two frames mix → blur/corruption.
                 n = 0
@@ -4260,21 +4273,13 @@ class _TLSRTSPCapture:
 
         frame_size = dec_w * dec_h * 3
 
-        # Frame reader thread — continuously reads decoded BGR frames
+        # Frame reader thread — continuously reads decoded BGR frames (Windows-compatible: no select())
         def frame_reader():
-            import select as _sel
             last_data = [time.time()]
             WATCHDOG  = 12.0          # restart if no frame for 12s (give time for IDR)
             while self._running:
                 try:
-                    # select() with 1s timeout — prevents blocking forever
-                    rdy, _, _ = _sel.select([proc.stdout], [], [], 1.0)
-                    if not rdy:
-                        if time.time() - last_data[0] > WATCHDOG:
-                            print(f'[RTSP] frame_reader: watchdog timeout ({WATCHDOG}s) — restarting')
-                            proc.kill()
-                            break
-                        continue
+                    # Read exactly one frame — blocking read without select() (Windows-safe)
                     raw = proc.stdout.read(frame_size)
                     if len(raw) == frame_size:
                         last_data[0] = time.time()  # reset watchdog
@@ -4287,11 +4292,19 @@ class _TLSRTSPCapture:
                         if not hasattr(self, '_ffl'):
                             self._ffl = True
                             print('[RTSP] ✅ SUCCESS: First frame decoded and ready!')
-                    else:
+                    elif len(raw) > 0:
+                        # Partial read — keep waiting or restart
                         if time.time() - last_data[0] > WATCHDOG:
-                            print('[RTSP] frame_reader: empty read watchdog — restarting')
+                            print('[RTSP] frame_reader: partial read watchdog — restarting')
                             proc.kill()
                             break
+                    else:
+                        # EOF reached
+                        if time.time() - last_data[0] > WATCHDOG:
+                            print('[RTSP] frame_reader: no data watchdog — restarting')
+                            proc.kill()
+                            break
+                        time.sleep(0.1)
                 except Exception as _e:
                     print(f'[RTSP] frame_reader error: {_e}')
                     break
@@ -4547,11 +4560,7 @@ class FFmpegVideoCapture:
             failures = 0
             while self.running:
                 try:
-                    # REDUCED: 2 s (was 3 s) — detect dropout faster
-                    readable, _, _ = select.select([proc.stdout], [], [], 2.0)
-                    if not readable:
-                        print("[FFmpeg Capture] Read timed out — reconnecting")
-                        break
+                    # Read frame sequentially (no select() on Windows)
                     n = 0
                     while n < self.frame_size:
                         got = proc.stdout.readinto(_mv[n:])
