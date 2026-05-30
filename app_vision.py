@@ -111,11 +111,26 @@ import shutil
 
 def _resolve_ffmpeg_bin():
     """Resolve the ffmpeg executable on Windows using PATH or common install folders."""
+    env_path = os.environ.get('FFMPEG_BIN') or os.environ.get('FFMPEG_EXE')
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
     path = shutil.which('ffmpeg')
-    if path:
+    if path and os.path.isfile(path):
         return path
 
     if os.name == 'nt':
+        try:
+            where = subprocess.run(
+                ['where', 'ffmpeg'], capture_output=True, text=True, timeout=4)
+            if where.returncode == 0:
+                for line in where.stdout.splitlines():
+                    candidate = line.strip()
+                    if candidate and os.path.isfile(candidate):
+                        return candidate
+        except Exception:
+            pass
+
         candidates = [
             os.path.expandvars(r'%ProgramFiles%\ffmpeg\bin\ffmpeg.exe'),
             os.path.expandvars(r'%ProgramFiles(x86)%\ffmpeg\bin\ffmpeg.exe'),
@@ -4643,8 +4658,12 @@ def _stream_rtsp_direct(rtsp_url: str):
     MAX_STORE     = 5            # keep last N frames only
 
     # ── READER: ffmpeg → parse JPEG → store with ID ──────────────
+    ffmpeg_exe = FFMPEG_BIN or shutil.which('ffmpeg')
+    if not ffmpeg_exe:
+        print('[STREAM] ffmpeg not found for stream capture')
+        ffmpeg_exe = 'ffmpeg'
     stream_cmd = [
-        'ffmpeg', '-y', '-loglevel', 'error',
+        ffmpeg_exe, '-y', '-loglevel', 'error',
         '-fflags', 'nobuffer+discardcorrupt',
         '-flags', 'low_delay',
         '-rtsp_transport', 'tcp',
