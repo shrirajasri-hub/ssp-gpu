@@ -107,6 +107,31 @@ import time
 import select
 import gc
 import _queue
+import shutil
+
+def _resolve_ffmpeg_bin():
+    """Resolve the ffmpeg executable on Windows using PATH or common install folders."""
+    path = shutil.which('ffmpeg')
+    if path:
+        return path
+
+    if os.name == 'nt':
+        candidates = [
+            os.path.expandvars(r'%ProgramFiles%\ffmpeg\bin\ffmpeg.exe'),
+            os.path.expandvars(r'%ProgramFiles(x86)%\ffmpeg\bin\ffmpeg.exe'),
+            r'C:\ffmpeg\bin\ffmpeg.exe',
+        ]
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                return candidate
+    return None
+
+# Locate ffmpeg binary once at startup so all subsystems can reuse it.
+FFMPEG_BIN = _resolve_ffmpeg_bin()
+if FFMPEG_BIN:
+    print(f'[RTSP] ffmpeg resolved to: {FFMPEG_BIN}')
+else:
+    print('[RTSP] ffmpeg not found in PATH — ffmpeg-based RTSP capture disabled')
 
 TEMP_DIR = "/home/vidana-pi/sspnew/temp_frames"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -3780,7 +3805,10 @@ def _detect_ffmpeg_hwaccel():
     Called once at startup; result cached in _HW_TYPE.
     """
     try:
-        r   = subprocess.run(['ffmpeg', '-hwaccels'],
+        if not FFMPEG_BIN:
+            print('[HWACCEL] ffmpeg missing — assuming software decode')
+            return 'software'
+        r   = subprocess.run([FFMPEG_BIN, '-hwaccels'],
                              capture_output=True, text=True, timeout=4)
         out = r.stdout.lower()
         is_arm   = ('arm'   in platform.machine().lower() or
@@ -3895,7 +3923,16 @@ class _TLSRTSPCapture:
         # Pure software H264 decode — correct BGR24 output.
         # probesize/analyzeduration NOT restricted: FFmpeg needs enough bytes
         # to read H264 SPS/PPS headers or the decoder can't initialise.
-        cmd = ['ffmpeg', '-y', '-loglevel', 'warning',
+        if not FFMPEG_BIN:
+            print('[RTSP] ffmpeg not available — cannot start native rtsps')
+            return False
+
+        FFMPEG_EXE = shutil.which('ffmpeg') or FFMPEG_BIN
+        print('FFMPEG FOUND:', shutil.which('ffmpeg'))
+        print('FFMPEG_BIN:', FFMPEG_BIN)
+        print('FFMPEG_EXE:', FFMPEG_EXE)
+
+        cmd = [FFMPEG_EXE, '-y', '-loglevel', 'warning',
                '-user_agent', 'LibVLC',
                '-tls_verify', '0',
                '-rtsp_transport', 'tcp',
@@ -3910,6 +3947,7 @@ class _TLSRTSPCapture:
                '-f',              'rawvideo',
                '-vsync',          '0',
                '-an', '-sn', 'pipe:1']
+        print('COMMAND:', cmd)
         try:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE,
@@ -3974,7 +4012,11 @@ class _TLSRTSPCapture:
         frame_size  = self._dec_w * self._dec_h * 3
 
         # Pure software H264 decode — correct BGR24 output.
-        cmd = ['ffmpeg', '-y', '-loglevel', 'warning',
+        if not FFMPEG_BIN:
+            print('[RTSP] ffmpeg not available — cannot start ffmpeg proxy')
+            return False
+
+        cmd = [FFMPEG_BIN, '-y', '-loglevel', 'warning',
                '-rtsp_transport', 'tcp',
                '-fflags',         'nobuffer+discardcorrupt',
                '-flags',          'low_delay',
@@ -3986,6 +4028,7 @@ class _TLSRTSPCapture:
                '-vsync',          '0',
                '-an', '-sn', 'pipe:1']
         try:
+            print(f'[RTSP] launching ffmpeg proxy: {cmd}')
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -4164,8 +4207,12 @@ class _TLSRTSPCapture:
         dec_w   = 1280
         dec_h   = 960   # FIXED: was 720 — must match native camera resolution
 
-        proc = subprocess.Popen(
-            ['ffmpeg', '-y', '-loglevel', 'warning',
+        if not FFMPEG_BIN:
+            print('[RTSP] Cannot start ffmpeg RTP decoder: ffmpeg not found')
+            self._running = False
+            return
+
+        cmd = [FFMPEG_BIN, '-y', '-loglevel', 'warning',
              # probesize NOT restricted (was 32) — must read SPS/PPS headers
              '-flags', 'low_delay',
              '-fflags', 'nobuffer+discardcorrupt',
@@ -4173,7 +4220,10 @@ class _TLSRTSPCapture:
              '-vf', f'scale={dec_w}:{dec_h},format=bgr24',
              '-f', 'rawvideo', '-pix_fmt', 'bgr24',
              '-vsync', 'drop',
-             'pipe:1'],
+             'pipe:1']
+        print(f'[RTSP] launching RTP ffmpeg decoder: {cmd}')
+        proc = subprocess.Popen(
+            cmd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # Stderr reader thread for debugging
@@ -4316,7 +4366,11 @@ class _TLSRTSPCapture:
 
     def _launch_ffmpeg(self, url: str, tls: bool) -> bool:
         """Launch ffmpeg subprocess pipe and verify first frame."""
-        cmd = ['ffmpeg', '-loglevel', 'error']
+        if not FFMPEG_BIN:
+            print('[RTSP] ffmpeg not available — cannot open ffmpeg pipe')
+            return False
+
+        cmd = [FFMPEG_BIN, '-loglevel', 'error']
         if tls:
             cmd += ['-tls_verify', '0']
         cmd += [
@@ -4327,6 +4381,7 @@ class _TLSRTSPCapture:
             '-an', '-sn', 'pipe:1'
         ]
         try:
+            print(f'[RTSP] launching ffmpeg pipe: {cmd}')
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, bufsize=10**8)
@@ -4416,7 +4471,12 @@ class FFmpegVideoCapture:
         # Pure software H264 decode — correct BGR24 output.
         # hwaccel REMOVED: v4l2m2m output format caused BGR conversion errors.
         # probesize/analyzeduration NOT restricted (were 32/0 → decoder init fail).
-        cmd_base = ['ffmpeg',
+        if not FFMPEG_BIN:
+            print('[FFmpeg Capture] ffmpeg not found — cannot start FFmpeg capture')
+            time.sleep(1)
+            return
+
+        cmd_base = [FFMPEG_BIN,
                     '-thread_queue_size', '64',
                     '-fflags',            'nobuffer',
                     '-flags',             'low_delay',
@@ -5479,9 +5539,20 @@ if __name__ == '__main__':
     print(f"[INFO] Backend  : {be}")
     if state.backend in ("cpu", "gpu"):
         print(f"[INFO] Model    : {PT_MODEL_PATH}")
+        try:
+            print(f"MODEL PATH = {os.path.abspath(PT_MODEL_PATH)}")
+        except Exception:
+            pass
     else:
         print("[WARN] No model — hand detection disabled")
     print(f"📁  Storage  : {os.path.abspath(BASE_STORAGE)}")
+    # Print configured stream source (None until camera started)
+    try:
+        stream_src = state.video_source if getattr(state, 'video_source', None) else 'None'
+        print(f"STREAM SOURCE = {stream_src}")
+    except Exception:
+        pass
+    print(f"[INFO] FFMPEG  : {FFMPEG_BIN if FFMPEG_BIN else 'not found'}")
     print(f"🌐  Server   : http://0.0.0.0:5000")
     print("="*60 + "\n")
 
