@@ -155,7 +155,7 @@ if FFMPEG_BIN:
 else:
     print('[RTSP] ffmpeg not found in PATH — ffmpeg-based RTSP capture disabled')
 
-TEMP_DIR = "/home/vidana-pi/sspnew/temp_frames"
+TEMP_DIR = os.path.join(SCRIPT_DIR, "temp_frames")
 os.makedirs(TEMP_DIR, exist_ok=True)
 import re
 import platform
@@ -252,13 +252,10 @@ DISPLAY_MAP = {
 SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR      = os.path.join(SCRIPT_DIR, "models")
 PT_MODEL_PATH   = os.path.join(MODELS_DIR, "best.pt")
-# [FIX] Set absolute storage path for Raspberry Pi production environment
-BASE_STORAGE    = "/home/vidana-pi/SSP-SEQ/panel_data"
-# Fallback for local testing if the Pi home directory is not available
-if not os.path.exists("/home/vidana-pi"):
-    BASE_STORAGE = os.path.join(SCRIPT_DIR, "SSP-SEQ")
+# Store panel images under the application directory, not the Pi path.
+BASE_STORAGE    = os.path.join(SCRIPT_DIR, "panel_data")
 
-for d in (MODELS_DIR, BASE_STORAGE):
+for d in (MODELS_DIR, BASE_STORAGE, os.path.join(BASE_STORAGE, '_uploads')):
     os.makedirs(d, exist_ok=True)
 
 
@@ -4944,10 +4941,11 @@ def start_camera():
         # ── Resolve serial.pt path absolutely so it works regardless
         # of the process CWD (Flask can be launched from any directory).
         _script_dir       = os.path.dirname(os.path.abspath(__file__))
-        _serial_pt_path   = r"D:\SSP\models\serial.pt"
+        _serial_pt_path   = os.path.join(_script_dir, "models", "serial.pt")
         if not os.path.exists(_serial_pt_path):
-            # Fallback: models/ beside this script file
-            _serial_pt_path = os.path.join(_script_dir, "models", "serial.pt")
+            # Also try the app root models folder if the script is started
+            # from a different working directory.
+            _serial_pt_path = os.path.join(SCRIPT_DIR, "models", "serial.pt")
         print(f'[CAM2-OCR] serial.pt path → {_serial_pt_path}  '
               f'exists={os.path.exists(_serial_pt_path)}')
 
@@ -4960,6 +4958,10 @@ def start_camera():
         print(f'[CAM2-OCR] Instance ready for: {camera2_url[:60]}')
     else:
         camera2_ocr_instance = None
+        if not _CAM2_OCR_AVAILABLE:
+            print('[CAM2-OCR] camera2_ocr.py not available — serial.pt/EasyOCR disabled')
+        elif not camera2_url:
+            print('[CAM2-OCR] No Camera-2 URL configured — serial.pt/EasyOCR disabled (set camera2_url)')
 
     state.camera_active = True
     return jsonify({
@@ -5572,6 +5574,9 @@ if __name__ == '__main__':
     print("="*60)
     be = state.backend.upper()
     print(f"[INFO] Backend  : {be}")
+    print(f"[INFO] SCRIPT_DIR: {os.path.abspath(SCRIPT_DIR)}")
+    print(f"[INFO] BASE_STORAGE: {os.path.abspath(BASE_STORAGE)}")
+    print(f"[INFO] TEMP_DIR: {os.path.abspath(TEMP_DIR)}")
     if state.backend in ("cpu", "gpu"):
         print(f"[INFO] Model    : {PT_MODEL_PATH}")
         try:
