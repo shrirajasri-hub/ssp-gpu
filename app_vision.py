@@ -155,8 +155,6 @@ if FFMPEG_BIN:
 else:
     print('[RTSP] ffmpeg not found in PATH — ffmpeg-based RTSP capture disabled')
 
-TEMP_DIR = os.path.join(SCRIPT_DIR, "temp_frames")
-os.makedirs(TEMP_DIR, exist_ok=True)
 import re
 import platform
 from datetime import datetime
@@ -254,8 +252,9 @@ MODELS_DIR      = os.path.join(SCRIPT_DIR, "models")
 PT_MODEL_PATH   = os.path.join(MODELS_DIR, "best.pt")
 # Store panel images under the application directory, not the Pi path.
 BASE_STORAGE    = os.path.join(SCRIPT_DIR, "panel_data")
+TEMP_DIR       = os.path.join(SCRIPT_DIR, "temp_frames")
 
-for d in (MODELS_DIR, BASE_STORAGE, os.path.join(BASE_STORAGE, '_uploads')):
+for d in (MODELS_DIR, BASE_STORAGE, os.path.join(BASE_STORAGE, '_uploads'), TEMP_DIR):
     os.makedirs(d, exist_ok=True)
 
 
@@ -3530,6 +3529,18 @@ def _stream(cap, native_fps=None):
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     fails = 0
                     continue
+
+                if hasattr(cap, 'isOpened') and not cap.isOpened():
+                    print(f"[READER] ⚠️ cap.isOpened() false for {source_url} — reconnecting")
+                    try: cap.release()
+                    except: pass
+                    time.sleep(1)
+                    cap = _open_rtsp(source_url)
+                    is_tls = getattr(cap, '__class__', None) and cap.__class__.__name__ == '_TLSRTSPCapture'
+                    fails = 0
+                    last_ok = time.time()
+                    state.prev_gray = None
+                    continue
                 
                 fails += 1
                 if fails % 30 == 0:
@@ -4903,10 +4914,12 @@ def start_camera():
     if rtsp_url:
         state.video_source    = rtsp_url
         msg = f'LAN Camera — {rtsp_url[:40]} — {state.backend.upper()}'
+        print(f'[START_CAMERA] STREAM SOURCE set to {rtsp_url}')
     else:
         state.video_source    = None
         state.local_camera_id = int(device_id) if str(device_id).isdigit() else 0
         msg = f'Local Camera {state.local_camera_id} — {state.backend.upper()}'
+        print(f'[START_CAMERA] Local camera selected: {state.local_camera_id}')
 
     # Store Camera-2 URL (OCR overlay) — no inference done here
     _camera2_url = camera2_url if camera2_url else None
