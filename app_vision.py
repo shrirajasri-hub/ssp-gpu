@@ -3,9 +3,9 @@
 Panel Vision Inspection System
 Vidana Consulting Pvt Ltd
 
-Hardware:  Raspberry Pi + Hailo AI (reComputer R2140-12)
-Model:     models/best.hef  (Hailo compiled)  → primary
-Fallback:  models/best.pt   (PyTorch YOLO)    → CPU if Hailo unavailable
+Hardware:  NVIDIA GPU / CPU only
+Model:     models/best.pt   (PyTorch YOLO)  → primary
+Fallback:  models/best.pt   (PyTorch YOLO)  → CPU if GPU unavailable
 
 Image capture per panel:
   SEQ1  →  full frame  +  left / middle / right / bottom crops
@@ -202,13 +202,14 @@ DISPLAY_MAP = {
 # ─────────────────────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────────────────────
-MODELS_DIR     = "models"
-PT_MODEL_PATH  = os.path.join(MODELS_DIR, "best.pt")
+SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR      = os.path.join(SCRIPT_DIR, "models")
+PT_MODEL_PATH   = os.path.join(MODELS_DIR, "best.pt")
 # [FIX] Set absolute storage path for Raspberry Pi production environment
-BASE_STORAGE   = "/home/vidana-pi/SSP-SEQ/panel_data"
+BASE_STORAGE    = "/home/vidana-pi/SSP-SEQ/panel_data"
 # Fallback for local testing if the Pi home directory is not available
 if not os.path.exists("/home/vidana-pi"):
-    BASE_STORAGE = "SSP-SEQ"
+    BASE_STORAGE = os.path.join(SCRIPT_DIR, "SSP-SEQ")
 
 for d in (MODELS_DIR, BASE_STORAGE):
     os.makedirs(d, exist_ok=True)
@@ -220,19 +221,46 @@ for d in (MODELS_DIR, BASE_STORAGE):
 # ─────────────────────────────────────────────────────────────
 
 class CPUInference:
-    """YOLO inference — auto-selects CUDA GPU (Z440) or CPU (Pi fallback)."""
-    def __init__(self, pt_path: str):
+    """YOLO inference — auto-selects CUDA GPU or CPU fallback."""
+    def __init__(self, pt_path: str, force_cpu: bool = False):
         import torch
         from ultralytics import YOLO
-        self._device     = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        self.model       = YOLO(pt_path)
+
+        self._device = 'cpu'
+        if not force_cpu and self._cuda_usable():
+            self._device = 'cuda:0'
+
+        self.model = YOLO(pt_path)
         self.model_names = getattr(self.model, 'names', {})
-        # Warm up: first inference on GPU is slow; this hides that
-        self.model.predict(
-            source=__import__('numpy').zeros((640, 640, 3), dtype='uint8'),
-            device=self._device, verbose=False)
+
+        try:
+            self.model.predict(
+                source=__import__('numpy').zeros((640, 640, 3), dtype='uint8'),
+                device=self._device, verbose=False)
+        except Exception as e:
+            if self._device != 'cpu':
+                print(f"  [WARN] CUDA warmup failed: {e}. Falling back to CPU.")
+                self._device = 'cpu'
+                self.model.predict(
+                    source=__import__('numpy').zeros((640, 640, 3), dtype='uint8'),
+                    device='cpu', verbose=False)
+            else:
+                raise
+
         mode = f'CUDA GPU ({self._device})' if self._device != 'cpu' else 'CPU'
         print(f"  ✅ YOLO ready — {pt_path}  [{mode}]")
+
+    @staticmethod
+    def _cuda_usable():
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        try:
+            torch.zeros(1, device='cuda:0')
+            return True
+        except Exception as e:
+            print(f"  [WARN] CUDA available but unusable: {e}")
+            return False
 
     def infer(self, frame: np.ndarray, conf_threshold: float = 0.25):
         results = self.model.predict(
@@ -273,32 +301,45 @@ class CPUInference:
 
 
 # ─────────────────────────────────────────────────────────────
-# ENGINE LOADER  — Hailo first, CPU fallback
+# ENGINE LOADER  — YOLO GPU / CPU only
 # ─────────────────────────────────────────────────────────────
 
 def load_inference_engine():
     """
     Smart priority — picks the FASTEST engine for the current hardware:
 
-      Z440 / NVIDIA GPU  →  CUDA available                → GPU YOLO  (best.pt)
-      Pi   (no Hailo)    →  no CUDA, no hailo device       → CPU YOLO  (best.pt)
+      Z440 / NVIDIA GPU  →  CUDA available           → GPU YOLO  (best.pt)
+      No CUDA              → CPU YOLO  (best.pt)
     """
     import torch
     has_cuda = torch.cuda.is_available()
+    device_name = 'N/A'
+    if has_cuda:
+        try:
+            device_name = torch.cuda.get_device_name(0)
+        except Exception as e:
+            device_name = f'unavailable ({e})'
 
     print("\n[INFO] Loading inference engine ...")
     print(f"[DEBUG] Active CLASS_NAMES: {CLASS_NAMES}")
-    print(f"[INFO] CUDA available: {has_cuda}  "
-          f"({torch.cuda.get_device_name(0) if has_cuda else 'N/A'})")
+    print(f"[INFO] CUDA available: {has_cuda}  ({device_name})")
 
     if os.path.exists(PT_MODEL_PATH):
         try:
             engine = CPUInference(PT_MODEL_PATH)
-            mode = "GPU" if has_cuda else "CPU"
+            mode = "GPU" if engine._device != 'cpu' else "CPU"
             print(f"[OK] Running on {mode} — YOLO best.pt\n")
             return engine, mode.lower()
         except Exception as e:
             print(f"  [ERR] YOLO load failed: {e}")
+            if has_cuda:
+                print("  [INFO] Retrying model load on CPU fallback...")
+                try:
+                    engine = CPUInference(PT_MODEL_PATH, force_cpu=True)
+                    print("[OK] Running on CPU fallback — YOLO best.pt\n")
+                    return engine, "cpu"
+                except Exception as e2:
+                    print(f"  [ERR] CPU fallback failed: {e2}")
     else:
         print(f"  [ERR] {PT_MODEL_PATH} not found")
 
@@ -4810,8 +4851,8 @@ def start_camera():
         _script_dir       = os.path.dirname(os.path.abspath(__file__))
         _serial_pt_path   = r"D:\SSP\models\serial.pt"
         if not os.path.exists(_serial_pt_path):
-            # Fallback: models/ beside the models folder that has best.pt
-            _serial_pt_path = os.path.join(MODELS_DIR, "serial.pt")
+            # Fallback: models/ beside this script file
+            _serial_pt_path = os.path.join(_script_dir, "models", "serial.pt")
         print(f'[CAM2-OCR] serial.pt path → {_serial_pt_path}  '
               f'exists={os.path.exists(_serial_pt_path)}')
 

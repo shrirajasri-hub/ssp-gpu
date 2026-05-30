@@ -127,24 +127,10 @@ try:
 except ImportError:
     _EASYOCR_OK = False
 
-# ── Hailo platform ────────────────────────────────────────────
+# ── Hailo platform disabled ─────────────────────────────────────
+# This build is YOLO-only and does not use hailo_platform or HEF.
 _HAILO_OK             = False
 _HailoSchedulingAlg   = None
-try:
-    from hailo_platform import (
-        YOLO, VDevice, HailoStreamInterface,
-        InferVStreams, ConfigureParams,
-        InputVStreamParams, OutputVStreamParams, FormatType,
-    )
-    try:
-        from hailo_platform import HailoSchedulingAlgorithm
-        _HailoSchedulingAlg = HailoSchedulingAlgorithm
-    except ImportError:
-        pass
-    _HAILO_OK = True
-    print("[CAM2] hailo_platform available ✅")
-except ImportError:
-    print("[CAM2] hailo_platform not available — serial YOLO disabled")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -158,14 +144,8 @@ def sharpness_score(img: np.ndarray) -> float:
 
 
 # ═════════════════════════════════════════════════════════════════
-#  HAILO SERIAL DETECTOR
-#  NOTE: app_vision.py's HailoInference must ALSO use ROUND_ROBIN
-#  so both models share the device.  Add to HailoInference.__init__:
-#
-#    params = VDevice.create_params()
-#    params.scheduling_algorithm = \
-#        HailoSchedulingAlgorithm.ROUND_ROBIN
-#    self.device = VDevice(params=params)
+#  SERIAL DETECTOR (legacy Hailo comments removed)
+#  This build uses YOLO-only serial detection via PyTorch/Ultralytics.
 # ═════════════════════════════════════════════════════════════════
 
 class SerialHailoDetector:
@@ -644,14 +624,38 @@ class SerialYOLODetector:
     def __init__(self, pt_path: str):
         from ultralytics import YOLO
         import torch
-        self._device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
+        self._device = 'cuda:0' if self._cuda_usable() else 'cpu'
         self.model   = YOLO(pt_path)
-        # Warm up on GPU
-        self.model.predict(
-            source=__import__('numpy').zeros((640, 640, 3), dtype='uint8'),
-            device=self._device, verbose=False)
+
+        try:
+            self.model.predict(
+                source=__import__('numpy').zeros((640, 640, 3), dtype='uint8'),
+                device=self._device, verbose=False)
+        except Exception as e:
+            if self._device != 'cpu':
+                print(f"[CAM2-YOLO] CUDA warmup failed: {e}. Falling back to CPU.")
+                self._device = 'cpu'
+                self.model.predict(
+                    source=__import__('numpy').zeros((640, 640, 3), dtype='uint8'),
+                    device='cpu', verbose=False)
+            else:
+                raise
+
         print(f'[CAM2-YOLO] SerialYOLODetector ready '
               f'device={self._device}  model={pt_path}  ✅')
+
+    @staticmethod
+    def _cuda_usable():
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        try:
+            torch.zeros(1, device='cuda:0')
+            return True
+        except Exception as e:
+            print(f'[CAM2-YOLO] CUDA available but unusable: {e}')
+            return False
 
     def detect(self, frame_bgr):
         """
@@ -985,7 +989,13 @@ class Camera2OCR:
             if _EASYOCR_OK:
                 try:
                     import torch
-                    use_gpu = torch.cuda.is_available()
+                    use_gpu = False
+                    if torch.cuda.is_available():
+                        try:
+                            torch.zeros(1, device='cuda:0')
+                            use_gpu = True
+                        except Exception as e:
+                            print(f'[CAM2] EasyOCR GPU unavailable: {e}. Using CPU.')
                     self.easy_reader = _easyocr_mod.Reader(
                         ['en'], gpu=use_gpu, verbose=False)
                     print(f'[CAM2] EasyOCR Reader ready '
