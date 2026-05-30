@@ -112,10 +112,14 @@ import shutil
 def _resolve_ffmpeg_bin():
     """Resolve the ffmpeg executable on Windows using PATH or common install folders."""
     env_path = os.environ.get('FFMPEG_BIN') or os.environ.get('FFMPEG_EXE')
-    if env_path and os.path.isfile(env_path):
-        return env_path
+    print(f'[RTSP] env FFMPEG_BIN={env_path!r}')
+    if env_path:
+        print(f'[RTSP] env path exists: {os.path.exists(env_path)} file: {os.path.isfile(env_path)}')
+        if os.path.isfile(env_path):
+            return env_path
 
     path = shutil.which('ffmpeg')
+    print(f'[RTSP] shutil.which(ffmpeg)={path!r}')
     if path and os.path.isfile(path):
         return path
 
@@ -123,13 +127,15 @@ def _resolve_ffmpeg_bin():
         try:
             where = subprocess.run(
                 ['where', 'ffmpeg'], capture_output=True, text=True, timeout=4)
+            print(f'[RTSP] where ffmpeg rc={where.returncode} out={where.stdout!r}')
             if where.returncode == 0:
                 for line in where.stdout.splitlines():
                     candidate = line.strip()
+                    print(f'[RTSP] where candidate={candidate!r} exists={os.path.isfile(candidate)}')
                     if candidate and os.path.isfile(candidate):
                         return candidate
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'[RTSP] where ffmpeg failed: {e}')
 
         candidates = [
             os.path.expandvars(r'%ProgramFiles%\ffmpeg\bin\ffmpeg.exe'),
@@ -137,6 +143,7 @@ def _resolve_ffmpeg_bin():
             r'C:\ffmpeg\bin\ffmpeg.exe',
         ]
         for candidate in candidates:
+            print(f'[RTSP] candidate path={candidate!r} exists={os.path.isfile(candidate)}')
             if candidate and os.path.isfile(candidate):
                 return candidate
     return None
