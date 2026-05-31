@@ -5046,21 +5046,23 @@ def upload_video():
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
 
-    # Stop old stream and start fresh for new video
-    state.camera_active      = False
-    time.sleep(0.1)
-    state.stream_generation += 1
-    state.video_source        = save_path
-    state.camera_active       = True
-    state.prev_gray           = None
-    state.hand_bbox           = None
-    state.reset_for_new_panel()
-
-    print(f"[INFO] Video saved: {safe_name} | {file_mb:.1f} MB | "
-          f"{fps:.1f} FPS | {total_frames} frames")
-
-    # If form included a 'target' field, honor it. Default: cam1 (main pipeline)
+    # Stop old main stream only if this upload is for Camera-1 playback.
     target = (request.form.get('target') or request.args.get('target') or 'cam1')
+    if target == 'cam1':
+        state.camera_active      = False
+        time.sleep(0.1)
+        state.stream_generation += 1
+        state.video_source        = save_path
+        state.camera_active       = True
+        state.prev_gray           = None
+        state.hand_bbox           = None
+        state.reset_for_new_panel()
+        print(f"[INFO] Video saved for Camera-1 playback: {safe_name} | {file_mb:.1f} MB | "
+              f"{fps:.1f} FPS | {total_frames} frames")
+    else:
+        # Camera-2 uploads should not replace the main Camera-1 stream.
+        print(f"[INFO] Video saved for Camera-2 OCR only: {safe_name} | {file_mb:.1f} MB | "
+              f"{fps:.1f} FPS | {total_frames} frames")
 
     # If target == cam2, start Camera-2 OCR instance using the uploaded file
     cam2_started = False
