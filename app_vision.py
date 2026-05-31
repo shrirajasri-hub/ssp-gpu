@@ -3871,7 +3871,7 @@ def _hw_prefix():
     return []
 
 
-def _open_rtsp(url: str, width=1280, height=960):
+def _open_rtsp(url: str, width=1920, height=1080):
     if ':443/' in url or ':443' in url:
         return _TLSRTSPCapture(url, width=width, height=height)
     return FFmpegVideoCapture(url, width=width, height=height)
@@ -3946,8 +3946,8 @@ class _TLSRTSPCapture:
         """Native rtsps:// in ffmpeg (skipping proxy)."""
         rtsps_url = self._url.replace("rtsp://", "rtsps://")
         
-        self._dec_w = 1280
-        self._dec_h = 960
+        self._dec_w = self._w
+        self._dec_h = self._h
         frame_size  = self._dec_w * self._dec_h * 3
 
         # Pure software H264 decode — correct BGR24 output.
@@ -4045,9 +4045,9 @@ class _TLSRTSPCapture:
         proxy_url = (f'rtsp://{self._user}:{self._pwd}@'
                      f'127.0.0.1:{proxy_port}{self._path}')
 
-        # Force 1280x960 for Camera 1
-        self._dec_w = 1280
-        self._dec_h = 960
+        # Use requested target resolution for this RTSP capture
+        self._dec_w = self._w
+        self._dec_h = self._h
         frame_size  = self._dec_w * self._dec_h * 3
 
         # Pure software H264 decode — correct BGR24 output.
@@ -4247,8 +4247,8 @@ class _TLSRTSPCapture:
         import struct, queue as _q
 
         spspps  = getattr(self, '_spspps', b'')
-        dec_w   = 1280
-        dec_h   = 960   # FIXED: was 720 — must match native camera resolution
+        dec_w   = self._w
+        dec_h   = self._h
 
         if not FFMPEG_BIN:
             print('[RTSP] Cannot start ffmpeg RTP decoder: ffmpeg not found')
@@ -4491,7 +4491,7 @@ class FFmpegVideoCapture:
     def release(self):
         pass
 
-    def __init__(self, url, width=1280, height=960):   # FIXED: was height=720
+    def __init__(self, url, width=1920, height=1080):   # FIXED: was height=720
         self.url = url
         self.width = width
         self.height = height
@@ -4640,9 +4640,17 @@ def generate_frames():
     # Local camera
     cam_id = getattr(state, 'local_camera_id', 0)
     cap = cv2.VideoCapture(cam_id)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    yield from _stream(cap, native_fps=None)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    try:
+        cap.set(cv2.CAP_PROP_FPS, 30)
+    except Exception:
+        pass
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
+    yield from _stream(cap, native_fps=30.0)
 
 
 def _stream_rtsp_direct(rtsp_url: str):
@@ -5064,6 +5072,11 @@ def upload_video():
         print(f"[INFO] Video saved for Camera-2 OCR only: {safe_name} | {file_mb:.1f} MB | "
               f"{fps:.1f} FPS | {total_frames} frames")
 
+    # Make uploaded Camera-2 files visible to the OCR overlay stream.
+    if target == 'cam2':
+        global _camera2_url
+        _camera2_url = save_path
+
     # If target == cam2, start Camera-2 OCR instance using the uploaded file
     cam2_started = False
     if target == 'cam2':
@@ -5217,7 +5230,7 @@ def _generate_cam2_frames():
         return b.tobytes()
 
     while True:
-        if not _camera2_url or not camera2_ocr_instance:
+        if not camera2_ocr_instance:
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
                    + _make_banner("CAMERA 2 NOT CONFIGURED") + b'\r\n')
             time.sleep(0.5)
