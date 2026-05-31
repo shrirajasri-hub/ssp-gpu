@@ -1078,7 +1078,8 @@ def _save(path, img):
     if img is None or img.size == 0:
         print(f"  ❌ Cannot save empty image to {os.path.basename(path)}")
         return False
-    ok = cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 100])
+    # High quality JPEG (98) for QC checks — better than standard 90
+    ok = cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 98])
     print(f"  {'💾' if ok else '❌'} {os.path.basename(path)}")
     return ok
 
@@ -1247,6 +1248,89 @@ def capture_sequence_images(cap_data, sequence_id, serial_number):
         return None
 
 
+def check_missing_sequences():
+    """
+    Check if any sequence images are missing before PDF generation.
+    Alert user with voice + UI message if sequences are incomplete.
+    Returns True if all sequences captured, False if any missing.
+    """
+    missing = []
+    for seq_id in (1, 2, 3):
+        if not state.sequence_captured.get(seq_id, False):
+            missing.append(seq_id)
+    
+    if missing:
+        missing_str = ", ".join(f"SEQ{s}" for s in missing)
+        state.status_msg = f"⚠️  MISSING: {missing_str} — Please capture before PDF"
+        
+        # Voice alert in English and Hindi
+        msg_en = f"Missing {missing_str}. Please place the panel and capture images."
+        speak(msg_en, lang='en')
+        
+        def _hi_missing():
+            import shutil
+            seq_hi = {1: 'ek', 2: 'do', 3: 'teen'}
+            missing_hi = ", ".join(f"SEQ {seq_hi.get(s, str(s))}" for s in missing)
+            msg_hi = f"{missing_hi} missing. Panel rakhein aur capture karein."
+            exe = ('espeak-ng' if shutil.which('espeak-ng')
+                   else 'espeak' if shutil.which('espeak') else None)
+            if exe:
+                try:
+                    subprocess.run([exe, '-v', 'hi', '-s', '120', '-a', '90', msg_hi],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                except Exception:
+                    pass
+        
+        threading.Thread(target=_hi_missing, daemon=True).start()
+        return False
+    
+    return True
+
+
+def check_panel_wipe_status():
+    """
+    Check if panel was properly wiped for each sequence.
+    Alert user if wipe percentage is too low.
+    Returns wipe status for logging/reporting.
+    """
+    wipe_status = {}
+    MIN_WIPE_PCT = 50  # Minimum acceptable wipe percentage
+    
+    for seq_id in (1, 2, 3):
+        if seq_id == 1:
+            wipe_pct = getattr(state, 'seq1_final_wipe_pct', 0)
+        elif seq_id == 2:
+            wipe_pct = getattr(state, 'seq2_final_wipe_pct', 0)
+        else:
+            wipe_pct = getattr(state, 'seq3_final_wipe_pct', 0)
+        
+        wipe_status[seq_id] = wipe_pct
+        
+        if wipe_pct < MIN_WIPE_PCT:
+            # Alert operator about insufficient wiping
+            state.status_msg = f"⚠️  SEQ{seq_id}: Panel not properly wiped ({wipe_pct:.0f}%)"
+            
+            msg_en = f"Sequence {seq_id}. Panel not properly wiped. Please wipe clean."
+            speak(msg_en, lang='en')
+            
+            def _hi_wipe(sid=seq_id):
+                import shutil
+                seq_hi = {1: 'ek', 2: 'do', 3: 'teen'}.get(sid, str(sid))
+                msg_hi = f"Sequence {seq_hi}. Panel saf nahi hai. Saaf karein."
+                exe = ('espeak-ng' if shutil.which('espeak-ng')
+                       else 'espeak' if shutil.which('espeak') else None)
+                if exe:
+                    try:
+                        subprocess.run([exe, '-v', 'hi', '-s', '120', '-a', '90', msg_hi],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                    except Exception:
+                        pass
+            
+            threading.Thread(target=_hi_wipe, daemon=True).start()
+    
+    return wipe_status
+
+
 def _finalize_panel():
     """All 3 sequences done — increment count and fire PDF in background."""
     # [FIX] Capture the current folder BEFORE any state resets happen
@@ -1327,6 +1411,17 @@ def _finalize_panel():
             # state.serial_number after a reset overrides "Searching..." and
             # the UI shows the OLD panel's serial again (Bug 1).
             my_reset_id = state.panel_reset_id
+
+            # ── Check for missing sequences before PDF generation ──
+            # Alert user with voice + UI if any sequence images are missing
+            if not check_missing_sequences():
+                print("[PDF] ⚠️  Incomplete sequence capture — PDF generation deferred")
+                print("      User must complete all sequence captures before PDF")
+                return
+
+            # ── Check panel wipe status and alert if insufficient ──
+            wipe_status = check_panel_wipe_status()
+            print(f"[PDF] Wipe status: {wipe_status}")
 
             # ── FIX: wait up to 8s for background OCR to produce a real serial ──
             final_serial = serial_snap
@@ -5474,27 +5569,15 @@ def sequence_status():
     }
 
     # ── Landscape alert lifecycle ─────────────────────────────────
-    # Detect SEQ2/SEQ3 first-capture and trigger "captured" voice + green flash
+    # SEQ2/SEQ3: When image is captured, mark it visually but NO voice announcement
+    # (User requirement: remove 'seq completed' voice)
     if (state.landscape_alert == "seq2"
             and state.seq2_auto_captured
             and not state._seq2_cap_announced):
         state._seq2_cap_announced = True
         state.landscape_alert     = "captured"
         state.landscape_alert_ts  = time.time()
-        speak("S E Q 2 captured. Good job!", lang='en')
-        def _hi_cap2():
-            import shutil
-            exe = ('espeak-ng' if shutil.which('espeak-ng')
-                   else 'espeak' if shutil.which('espeak') else None)
-            if exe:
-                try:
-                    subprocess.run([exe, '-v', 'hi', '-s', '120', '-a', '90',
-                                    'SEQ do. Photo le liya. Shukriya'],
-                                   stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=6)
-                except Exception:
-                    pass
-        threading.Thread(target=_hi_cap2, daemon=True).start()
+        # Voice removed per user request — no "captured" announcement
 
     elif (state.landscape_alert == "seq3"
             and state.seq3_auto_captured
@@ -5502,20 +5585,7 @@ def sequence_status():
         state._seq3_cap_announced = True
         state.landscape_alert     = "captured"
         state.landscape_alert_ts  = time.time()
-        speak("S E Q 3 captured. Good job!", lang='en')
-        def _hi_cap3():
-            import shutil
-            exe = ('espeak-ng' if shutil.which('espeak-ng')
-                   else 'espeak' if shutil.which('espeak') else None)
-            if exe:
-                try:
-                    subprocess.run([exe, '-v', 'hi', '-s', '120', '-a', '90',
-                                    'SEQ teen. Photo le liya. Shukriya'],
-                                   stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=6)
-                except Exception:
-                    pass
-        threading.Thread(target=_hi_cap3, daemon=True).start()
+        # Voice removed per user request — no "captured" announcement
 
     # Auto-clear "captured" green banner after 3 seconds
     elif (state.landscape_alert == "captured"
