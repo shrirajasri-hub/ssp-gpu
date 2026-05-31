@@ -899,9 +899,15 @@
                         <div class="upload-hint">MP4, AVI, MOV (Max 500MB)</div>
                         <input type="file" id="videoFileInput" accept="video/*" style="display: none;">
                     </div>
+                    <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+                        <label style="font-size:11px; font-weight:600;">Target</label>
+                        <select id="uploadTargetSelect" class="form-select" style="width:180px; font-size:11px;">
+                            <option value="cam1">Camera 1 (Panel)</option>
+                            <option value="cam2">Camera 2 (Serial OCR)</option>
+                        </select>
+                    </div>
                     <div class="file-info" id="fileInfo"></div>
-                    <button class="btn btn-primary" id="processVideoBtn" style="margin-top: 15px;" disabled>Process
-                        Video</button>
+                    <button class="btn btn-primary" id="processVideoBtn" style="margin-top: 15px;" disabled>Process Video</button>
                 </div>
 
                 <!-- LIVE CAMERA TAB -->
@@ -1212,6 +1218,8 @@
             try {
                 const form = new FormData();
                 form.append('video', file);
+                const target = (document.getElementById('uploadTargetSelect')?.value || 'cam1');
+                form.append('target', target);
 
                 // Use XMLHttpRequest so we can show upload progress
                 const uploadResult = await new Promise((resolve, reject) => {
@@ -1250,6 +1258,12 @@
 
                 // Show MJPEG feed (drops old connection first)
                 startFeed(uploadResult.backend);
+
+                // If uploaded target was Camera-2, open the Camera-2 overlay
+                if (uploadResult.target === 'cam2') {
+                    // Display OCR overlay (server started Camera2OCR when receiving upload)
+                    startCam2Feed('uploaded');
+                }
 
                 // Update file info with FPS + size
                 const info = document.getElementById('fileInfo');

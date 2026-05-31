@@ -1708,12 +1708,15 @@ class Camera2OCR:
         
         Returns: 10-char serial DDMMYY3DigitsLetter or None
         """
-        is_pi = platform.machine().startswith('arm')
-        
-        # Smart defaults: Pi=2 variants (fast), others=7 variants (accurate)
+        # Force Pi-style (fast) voting behavior regardless of host platform.
+        # This keeps the OCR logic identical to the Pi path: fewer variants
+        # and lower confirmation thresholds for faster responses on GPU.
+        is_pi = True
+
+        # Smart defaults: use Pi-style defaults (fast) for all platforms
         if max_variants is None:
-            max_variants = 2 if is_pi else 7
-        
+            max_variants = 2
+
         # Vote trackers
         day_votes   = Counter()
         code_votes  = Counter()
@@ -1723,8 +1726,8 @@ class Camera2OCR:
         code_confirmed  = None
         letter_confirmed = None
         
-        # Pi needs 2 matches (quick), servers need 3 (safer)
-        CONFIRM_THRESHOLD = 2 if is_pi else 3
+        # Use Pi-style confirmation threshold (2 matches required).
+        CONFIRM_THRESHOLD = 2
         
         # Get preprocessing variants (2DFilter, Otsu, DoG, MG, Original, CLAHE, Adaptive)
         variants = self._preprocess_crop(crop)

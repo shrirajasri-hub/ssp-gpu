@@ -4731,21 +4731,21 @@ def _stream_rtsp_direct(rtsp_url: str):
 
         while state.camera_active and state.stream_generation == my_gen:
             try:
-                import select as _sel
-                rdy, _, _ = _sel.select([stream_proc.stdout], [], [], 1.0)
-                if not rdy:
-                    if time.time() - last_data_ts[0] > WATCHDOG_SEC:
-                        print('[STREAM] Watchdog timeout — restarting ffmpeg')
-                        try: stream_proc.kill()
-                        except: pass
-                        time.sleep(1.0)
-                        stream_proc = _start_ffmpeg()
-                        if stream_proc is None: break
-                        buf = b''
-                        last_data_ts[0] = time.time()
+                # Windows pipes are not selectable. Use a blocking read
+                # with a reasonable chunk size and watchdog to detect stalls.
+                try:
+                    chunk = stream_proc.stdout.read(65536)
+                except Exception as _e:
+                    print(f'[STREAM] ffmpeg read error — restarting: {_e}')
+                    try: stream_proc.kill()
+                    except: pass
+                    time.sleep(1.0)
+                    stream_proc = _start_ffmpeg()
+                    if stream_proc is None: break
+                    buf = b''
+                    last_data_ts[0] = time.time()
                     continue
 
-                chunk = stream_proc.stdout.read(65536)
                 if not chunk:
                     print('[STREAM] ffmpeg pipe closed — restarting')
                     try: stream_proc.kill()
@@ -5059,6 +5059,49 @@ def upload_video():
     print(f"[INFO] Video saved: {safe_name} | {file_mb:.1f} MB | "
           f"{fps:.1f} FPS | {total_frames} frames")
 
+    # If form included a 'target' field, honor it. Default: cam1 (main pipeline)
+    target = (request.form.get('target') or request.args.get('target') or 'cam1')
+
+    # If target == cam2, start Camera-2 OCR instance using the uploaded file
+    cam2_started = False
+    if target == 'cam2':
+        if _CAM2_OCR_AVAILABLE:
+            global camera2_ocr_instance
+            # Stop previous instance cleanly before creating a new one
+            if camera2_ocr_instance is not None:
+                try:
+                    camera2_ocr_instance.stop()
+                except Exception:
+                    pass
+
+            # Resolve serial.pt path (same logic as /api/start_camera)
+            _script_dir       = os.path.dirname(os.path.abspath(__file__))
+            _serial_pt_path   = os.path.join(_script_dir, "models", "serial.pt")
+            if not os.path.exists(_serial_pt_path):
+                _serial_pt_path = os.path.join(SCRIPT_DIR, "models", "serial.pt")
+            print(f'[UPLOAD] camera2 upload -> serial.pt path {_serial_pt_path} exists={os.path.exists(_serial_pt_path)}')
+
+            try:
+                # Use a simple open_cap_fn that opens the saved file via OpenCV
+                camera2_ocr_instance = Camera2OCR(
+                    camera2_url=save_path,
+                    open_cap_fn=lambda u, p=save_path: cv2.VideoCapture(p),
+                    on_serial_detected=None,
+                    pt_path=_serial_pt_path
+                )
+                # Start scanning immediately for uploaded video
+                try:
+                    camera2_ocr_instance.reset_for_new_panel()
+                    camera2_ocr_instance.start_ocr()
+                except Exception:
+                    pass
+                cam2_started = True
+                print(f'[UPLOAD] Camera-2 OCR started for uploaded file {safe_name}')
+            except Exception as e:
+                print(f'[UPLOAD] Failed to start Camera-2 OCR: {e}')
+        else:
+            print('[UPLOAD] Camera-2 OCR not available (camera2_ocr.py missing)')
+
     return jsonify({
         'success'     : True,
         'source'      : 'video',
@@ -5067,6 +5110,8 @@ def upload_video():
         'total_frames': total_frames,
         'file_mb'     : round(file_mb, 1),
         'filename'    : safe_name,
+        'target'      : target,
+        'cam2_started': cam2_started,
         'message'     : f'Video ready — {fps:.1f} FPS real-time playback'
     })
 
