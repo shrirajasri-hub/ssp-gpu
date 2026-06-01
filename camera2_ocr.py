@@ -412,11 +412,11 @@ class SerialYOLODetector:
             x2 = min(iw, x2 + p)
             y2 = min(ih, y2 + p)
             
-            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 100, 0), 4)
             cv2.putText(out, f'{label} {conf:.2f}',
                         (x1, max(y1 - 6, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                        (0, 255, 0), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 100, 0), 2, cv2.LINE_AA)
         return out
 
     def close(self):

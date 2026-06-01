@@ -991,17 +991,16 @@ def ensure_panel_folder():
     return state.current_sequence_panel_folder
 
 def allocate_panel_folder_for_seq1(serial_present=False):
-    """Create the panel save folder as soon as SEQ1 is stable and serial is seen."""
+    """Create the panel save folder as soon as SEQ1 is stable."""
     if state.current_sequence_panel_folder is not None:
         return state.current_sequence_panel_folder
 
     if (state.seq1_detection_count >= 2
-            and serial_present
             and state.current_sequence in (0, 1)):
         state.panel_id = datetime.now().strftime("%H%M%S")
         state.current_sequence_panel_folder = get_panel_folder(
             state.serial_number or 'SSP-SEQ', state.panel_id)
-        print(f"[SEQ1-FOLDER] ✅ Panel folder created (EARLY - 2 stable frames + serial)")
+        print(f"[SEQ1-FOLDER] ✅ Panel folder created (EARLY - 2 stable frames)")
         print(f"[SEQ1-FOLDER]    Path: {state.current_sequence_panel_folder}")
         print(f"[SEQ1-FOLDER]    Panel ID: {state.panel_id}")
         print(f"[SEQ1-FOLDER]    Detection count: {state.seq1_detection_count}")
@@ -2701,12 +2700,12 @@ def process_frame(frame, detections):
             if panel_is_stable:
                 if panel_det is not None:
                     bx1, by1, bx2, by2 = panel_det['bbox']
+                    current_rect = (bx1, by1, bx2 - bx1, by2 - by1)
                     # [RULE] Panel must be clearly horizontal (Landscape)
                     if (bx2 - bx1) < ((by2 - by1) * 1.05):  # FIX D2: 1.15->1.05 for Pi bbox rounding
-                        print(f"[SEQ1] Panel is too vertical - waiting for x-axis alignment")
-                        panel_is_stable = False
+                        print(f"[SEQ1] Panel is portrait - capturing anyway as requested")
                     else:
-                        current_rect = (bx1, by1, bx2 - bx1, by2 - by1)
+                        pass
                 else:
                     # Fallback if only serial_number was seen: use full frame as panel_rect
                     current_rect = (0, 0, frame.shape[1], frame.shape[0])
