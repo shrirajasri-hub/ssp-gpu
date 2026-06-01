@@ -1721,6 +1721,14 @@ def get_seq(dets):
         state.model_sees = "NONE"
         return None
 
+    # [FIX] Require minimum confidence for ALL sequences to prevent false flips and ghost panels
+    # Filter out any sequence detections below 0.60 confidence (empty table hallucinations are usually low conf).
+    seq_dets = [d for d in seq_dets if d['confidence'] >= 0.60]
+    
+    if not seq_dets:
+        state.model_sees = "NONE"
+        return None
+
     # [FIX] If at start, prefer SEQ1 if present (avoids skipping)
     if state.current_sequence == 0:
         seq1 = next((d for d in seq_dets if CLASS_MAP[d['name']] == 1), None)
@@ -1730,12 +1738,6 @@ def get_seq(dets):
 
     # Pick highest confidence ONLY (Standard rule)
     best = max(seq_dets, key=lambda x: x['confidence'])
-    
-    # [FIX] Require minimum confidence for SEQ2 and SEQ3 to prevent false flips
-    # If the model hallucinates a panel_seq2 with low confidence (e.g. 0.35), ignore it.
-    if CLASS_MAP[best['name']] in (2, 3) and best['confidence'] < 0.60:
-        state.model_sees = "NONE"
-        return None
 
     state.model_sees = best['name']
     return CLASS_MAP[best['name']]
@@ -2841,12 +2843,12 @@ def process_frame(frame, detections):
 
     # Best available panel_seq2 detection this frame
     _seq2_det = None
-    if panel_det is not None and panel_det['name'] == 'panel_seq2':
-        _seq2_det = panel_det
-    elif (best_any_panel is not None
-          and best_any_panel['name'] == 'panel_seq2'
-          and not seq3_also_visible):
-        _seq2_det = best_any_panel
+    # STRICT BLOCK: if seq3 is also visible anywhere in the frame, do NOT capture seq2
+    if not seq3_also_visible:
+        if panel_det is not None and panel_det['name'] == 'panel_seq2':
+            _seq2_det = panel_det
+        elif best_any_panel is not None and best_any_panel['name'] == 'panel_seq2':
+            _seq2_det = best_any_panel
 
     if (state.current_sequence == 2
             and not state.seq2_auto_captured
@@ -2981,6 +2983,7 @@ def process_frame(frame, detections):
 
             # SEQ2 active but SEQ3 class detected alone → pre-capture SEQ3
             if (state.current_sequence == 2 and _cross_name == 'panel_seq3'
+                    and not seq2_also_visible
                     and not state.seq3_auto_captured
                     and not state.all_sequences_done
                     and _c_sharp >= 12):
@@ -2997,6 +3000,7 @@ def process_frame(frame, detections):
 
             # SEQ3 active but SEQ2 class detected alone → rescue SEQ2 capture
             elif (state.current_sequence == 3 and _cross_name == 'panel_seq2'
+                    and not seq3_also_visible
                     and not state.seq2_auto_captured
                     and not state.all_sequences_done
                     and _c_sharp >= 12):
@@ -3053,14 +3057,12 @@ def process_frame(frame, detections):
     seq2_also_visible = any(d['name'] == 'panel_seq2' for d in seq_cands_A)
 
     _seq3_det = None
-    if panel_det is not None and panel_det['name'] == 'panel_seq3':
-        _seq3_det = panel_det
-    elif (best_any_panel is not None
-          and best_any_panel['name'] == 'panel_seq3'
-          # Only block when NOT in SEQ3 yet — once current_sequence==3 both panels
-          # may be visible simultaneously (transition period) and we MUST capture.
-          and (not seq2_also_visible or state.current_sequence == 3)):
-        _seq3_det = best_any_panel
+    # STRICT BLOCK: if seq2 is also visible anywhere in the frame, do NOT capture seq3
+    if not seq2_also_visible:
+        if panel_det is not None and panel_det['name'] == 'panel_seq3':
+            _seq3_det = panel_det
+        elif best_any_panel is not None and best_any_panel['name'] == 'panel_seq3':
+            _seq3_det = best_any_panel
 
     if (state.current_sequence == 3
             and not state.seq3_auto_captured

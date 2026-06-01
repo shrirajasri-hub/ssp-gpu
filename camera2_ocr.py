@@ -240,22 +240,16 @@ def preprocess_engraved_metal(roi_bgr: np.ndarray,
     bil = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
     v.append(("bilateral_clahe", up(clahe.apply(bil))))
 
-    # ── Select which variants to pass downstream ────────────────────
-    # Pi (CPU): keep only 3 fastest, proven high-value variants.
-    # GPU (CUDA): run all variants — GPU EasyOCR is fast enough.
-    _ALL_VARIANTS = (
-        "clahe_adapt", "blackhat", "tophat",
-        "sharp_clahe", "sharp_clahe_inv", "gradient",
-        "heq_2d_filter", "2d_otsu", "bilateral_clahe")
-    _PI_VARIANTS  = ("clahe_adapt", "heq_2d_filter", "2d_otsu")
-
+    # Filter to high-value variants.
+    # GPU: run all for maximum accuracy; Pi/CPU: keep 3 fastest.
+    _ALL = ("clahe_adapt","blackhat","tophat","sharp_clahe",
+            "sharp_clahe_inv","gradient","heq_2d_filter","2d_otsu","bilateral_clahe")
+    _CPU = ("clahe_adapt","heq_2d_filter","2d_otsu")
     try:
-        import torch
-        _on_gpu = torch.cuda.is_available()
-    except ImportError:
-        _on_gpu = False
-
-    _keep = _ALL_VARIANTS if _on_gpu else _PI_VARIANTS
+        import torch as _torch
+        _keep = _ALL if _torch.cuda.is_available() else _CPU
+    except Exception:
+        _keep = _CPU
     v = [(lbl, img) for (lbl, img) in v if lbl in _keep]
 
     if save_dir:
@@ -703,19 +697,16 @@ class Camera2OCR:
 
         _pt_path_ref = pt_path
 
-        # ── Synchronous print so terminal shows status immediately ──────────
-        # _init_yolo is a background thread; on Windows, daemon-thread prints
-        # can be buffered or lost early in startup.  This check runs in the
-        # main thread so the user always sees it within the first second.
+        # ── Sync print before background thread (visible immediately) ────
         if _pt_path_ref and os.path.exists(_pt_path_ref):
             try:
-                _sz = round(os.path.getsize(_pt_path_ref)/1024/1024, 1)
-                print(f'[CAM2-START] ✅ serial.pt found ({_sz} MB) → {_pt_path_ref}', flush=True)
+                _mb = round(os.path.getsize(_pt_path_ref)/1024/1024, 1)
+                print(f'[CAM2-START] ✅ serial.pt found ({_mb} MB) → {_pt_path_ref}',
+                      flush=True)
             except Exception:
                 print(f'[CAM2-START] ✅ serial.pt found → {_pt_path_ref}', flush=True)
         elif _pt_path_ref:
             print(f'[CAM2-START] ❌ serial.pt NOT FOUND → {_pt_path_ref}', flush=True)
-            print('[CAM2-START] ❌ Copy serial.pt into models/ folder next to app_vision.py', flush=True)
         else:
             print('[CAM2-START] ❌ serial.pt path is None', flush=True)
 
@@ -751,21 +742,27 @@ class Camera2OCR:
             if _EASYOCR_OK:
                 try:
                     import torch
-                    use_gpu = False
+                    use_gpu  = False
                     gpu_name = 'CPU'
                     if torch.cuda.is_available():
                         try:
                             torch.zeros(1, device='cuda:0')
-                            use_gpu = True
+                            use_gpu  = True
                             gpu_name = torch.cuda.get_device_name(0)
-                        except Exception as e:
-                            print(f'[CAM2] ⚠️  EasyOCR GPU unavailable: {e}. Using CPU.', flush=True)
-                    print(f'[CAM2] EasyOCR loading on {"GPU: " + gpu_name if use_gpu else "CPU"}...', flush=True)
+                        except Exception as _ge:
+                            print(f'[CAM2] ⚠️  GPU unavailable: {_ge} — using CPU',
+                                  flush=True)
+                    print(f'[CAM2] EasyOCR loading on '
+                          f'{"GPU: "+gpu_name if use_gpu else "CPU"} …', flush=True)
                     self.easy_reader = _easyocr_mod.Reader(
                         ['en'], gpu=use_gpu, verbose=False)
-                    print(f'[CAM2] ✅ EasyOCR ready  gpu={use_gpu}  device={gpu_name}', flush=True)
+                    print(f'[CAM2] ✅ EasyOCR ready  gpu={use_gpu}  '
+                          f'device={gpu_name}', flush=True)
                 except Exception as e:
                     print(f"[CAM2] ❌ EasyOCR init FAILED: {e}", flush=True)
+            else:
+                print("[CAM2] ❌ EasyOCR not installed — "
+                      "run: pip install easyocr", flush=True)
 
         threading.Thread(target=_init_yolo, daemon=True).start()
         threading.Thread(target=_init_easy, daemon=True).start()
@@ -1455,32 +1452,81 @@ class Camera2OCR:
     #  OCR
     # ─────────────────────────────────────────────────────────
 
-    def _run_easyocr(self, img) -> str:
-        """Run EasyOCR on a preprocessed crop, return joined text.
+    def _run_easyocr(self, img, variant_name: str = '') -> str:
+        """Run EasyOCR on one preprocessed image.
 
-        ✅ FIX: detail=1 returns [(bbox, text, conf), ...] tuples.
-             detail=0 returned text-only list, discarding confidence.
-             We now filter by conf>=0.25 before joining.
+        Logs EVERY call — including raw detections, per-box confidence and
+        the final joined text — to  serial_captures/easyocr_call_log.txt.
+        The file is appended so the full session history is preserved.
         """
+        from datetime import datetime as _dt_e
+        import cv2
+
+        ts      = _dt_e.now().strftime("%H:%M:%S.%f")[:-3]
+        ih, iw  = img.shape[:2] if hasattr(img, 'shape') else (0, 0)
+        tag     = variant_name or 'unknown'
+
+        # ── resolve log path ──────────────────────────────────────────────
+        if self.panel_folder and self.panel_folder not in ('.', ''):
+            _log_dir = os.path.join(self.panel_folder, "serial_captures")
+        else:
+            _log_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "serial_captures")
+        try:
+            os.makedirs(_log_dir, exist_ok=True)
+            _log_path = os.path.join(_log_dir, "easyocr_call_log.txt")
+        except Exception:
+            _log_path = None
+
+        def _write(lines: list):
+            if not _log_path:
+                return
+            try:
+                with open(_log_path, "a", encoding="utf-8") as _f:
+                    _f.write("\n".join(lines) + "\n")
+            except Exception:
+                pass
+
+        # ── guard: reader not ready ───────────────────────────────────────
         if not _EASYOCR_OK or self.easy_reader is None:
+            _write([f"[{ts}] [{tag}] img={iw}×{ih}  SKIPPED "
+                    f"(_EASYOCR_OK={_EASYOCR_OK} easy_reader={'None' if self.easy_reader is None else 'OK'})"])
             return ''
+
+        # ── call EasyOCR ──────────────────────────────────────────────────
         try:
             result = self.easy_reader.readtext(
-                img,
-                detail=1,          # ← FIX: was 0; 1 gives (text, conf)
-                paragraph=False,
-                batch_size=1,
-                width_ths=0.7,
-                height_ths=0.7
-            )
-            if not result:
-                return ''
-            # Each item: (bbox, text, confidence)
-            texts = [item[1] for item in result if len(item) >= 3 and item[2] >= 0.25]
-            return ''.join(texts) if texts else ''
+                img, detail=1, paragraph=False,
+                batch_size=1, width_ths=0.7, height_ths=0.7)
         except Exception as e:
-            print(f"[CAM2-OCR] EasyOCR Exception: {e}")
+            _write([f"[{ts}] [{tag}] img={iw}×{ih}  EXCEPTION: {e}"])
+            print(f"[CAM2-OCR] EasyOCR exception: {e}")
             return ''
+
+        # ── build log lines ───────────────────────────────────────────────
+        log_lines = [f"[{ts}] [{tag}] img={iw}×{ih}  boxes={len(result)}"]
+        if not result:
+            log_lines.append("  (no detections)")
+            _write(log_lines)
+            return ''
+
+        accepted = []
+        for idx, item in enumerate(result):
+            if len(item) < 3:
+                log_lines.append(f"  box{idx}: malformed item {item}")
+                continue
+            _bbox, _text, _conf = item[0], item[1], item[2]
+            flag = "✓" if _conf >= 0.25 else "✗"
+            log_lines.append(
+                f"  box{idx}: text={repr(_text):<18} conf={_conf:.3f}  {flag}")
+            if _conf >= 0.25:
+                accepted.append(_text)
+
+        joined = ''.join(accepted)
+        log_lines.append(f"  → joined='{joined}'  (accepted {len(accepted)}/{len(result)} boxes)")
+        _write(log_lines)
+
+        return joined
 
     def _extract_day_code_letter(self, validated_serial: str) -> tuple:
         """
@@ -1650,86 +1696,91 @@ class Camera2OCR:
         return None
 
     def _ocr_pipeline(self, crop) -> str:
-        """
-        Run all metal-optimised preprocessing variants through EasyOCR.
+        """Run all metal-optimised variants; log every result to text file;
+        save best preprocessed image.
 
-        ✅ Logs EVERY variant's raw EasyOCR output to:
-              serial_captures/easyocr_predictions.txt
-              (appended each frame so full session history is preserved)
-
-        ✅ Saves the WINNING preprocessed image (first variant that returns
-              a valid serial) to:
-              serial_captures/best_preprocessed.jpg
-              (overwritten each time a better/new hit is found)
-
-        Returns the first validated 10-char serial or None.
+        Output files (in serial_captures/):
+          easyocr_predictions.txt  — appended every frame, all variant results
+          best_preprocessed.jpg   — preprocessed image of the winning variant
         """
         import cv2
-        from datetime import datetime as _dt_ocr
+        from datetime import datetime as _dt_p
 
-        save_dir = (os.path.join(self.panel_folder, "serial_captures")
-                    if self.panel_folder and self.panel_folder != "." else None)
-        if save_dir:
+        # ── resolve save directory ───────────────────────────────────────
+        # Use panel_folder/serial_captures when available; fall back to
+        # script directory so the file is ALWAYS written somewhere.
+        if self.panel_folder and self.panel_folder not in ('.', ''):
+            save_dir = os.path.join(self.panel_folder, "serial_captures")
+        else:
+            save_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "serial_captures")
+        try:
             os.makedirs(save_dir, exist_ok=True)
+        except Exception:
+            save_dir = None   # give up on saving, but still do OCR
 
-        # ── Timestamp header for this crop's log block ─────────────
-        ts_str   = _dt_ocr.now().strftime("%H:%M:%S.%f")[:-3]
-        crop_h, crop_w = crop.shape[:2]
-        log_lines = [
-            f"\n{'─'*60}",
-            f"[{ts_str}]  crop={crop_w}×{crop_h}px",
-        ]
+        # ── save raw crop so caller can inspect what was sent to OCR ────
+        if save_dir:
+            try:
+                cv2.imwrite(os.path.join(save_dir, "last_raw_crop.jpg"),
+                            crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            except Exception:
+                pass
 
-        hit_serial  = None
-        best_img    = None          # preprocessed image that gave the hit
-        best_name   = None
+        ts       = _dt_p.now().strftime("%H:%M:%S.%f")[:-3]
+        ch, cw   = crop.shape[:2]
+        log      = [f"\n{'─'*62}",
+                    f"[{ts}]  crop={cw}×{ch}px  "
+                    f"easy_reader={'READY' if self.easy_reader else 'NONE'}  "
+                    f"_EASYOCR_OK={_EASYOCR_OK}"]
+
+        hit_serial = None
+        best_img   = None
+        best_name  = ''
 
         for name, pp_img in preprocess_engraved_metal(crop, save_dir=save_dir):
-            raw = self._run_easyocr(pp_img)
+            raw = self._run_easyocr(pp_img, variant_name=name)
 
             if raw:
                 hit = _correct_serial(raw)
                 if hit:
-                    log_lines.append(f"  ✅ [{name:18}]  raw={repr(raw):20}  → {hit}")
-                    print(f'[CAM2-OCR] [{name:18}] {repr(raw)} → {hit}')
-                    # Record winner and keep iterating to log all variants
-                    if hit_serial is None:
+                    log.append(f"  ✅ [{name:<20}] raw={repr(raw):<22} → {hit}")
+                    print(f"[CAM2-OCR] [{name:<20}] {repr(raw)} → {hit}")
+                    if hit_serial is None:          # keep first winner
                         hit_serial = hit
                         best_img   = pp_img
                         best_name  = name
                 else:
-                    log_lines.append(f"  ❌ [{name:18}]  raw={repr(raw):20}  (no match)")
-                    print(f'[CAM2-OCR] [{name:18}] {repr(raw)} len={len(raw)} no match')
+                    log.append(f"  ❌ [{name:<20}] raw={repr(raw):<22}  (no match)")
+                    print(f"[CAM2-OCR] [{name:<20}] {repr(raw)} no match")
             else:
-                log_lines.append(f"  ── [{name:18}]  (no text)")
-                print(f'[CAM2-OCR] [{name:18}] (no text)')
+                log.append(f"  ── [{name:<20}] (no text)")
+                print(f"[CAM2-OCR] [{name:<20}] (no text)")
 
-        log_lines.append(f"  RESULT → {hit_serial or 'None'}")
+        log.append(f"  RESULT → {hit_serial or 'None'}")
 
-        # ── Persist EasyOCR predictions to text file ────────────────
+        # ── write predictions text file (always, even on failure) ───────
         if save_dir:
             pred_path = os.path.join(save_dir, "easyocr_predictions.txt")
             try:
                 with open(pred_path, "a", encoding="utf-8") as fh:
-                    fh.write("\n".join(log_lines) + "\n")
+                    fh.write("\n".join(log) + "\n")
             except Exception as _e:
-                print(f"[CAM2-OCR] ⚠️  Could not write predictions log: {_e}")
+                print(f"[CAM2-OCR] ⚠️  predictions log write failed: {_e}")
 
-        # ── Save best preprocessed image ────────────────────────────
+        # ── save best preprocessed image ────────────────────────────────
         if best_img is not None and save_dir:
             best_path = os.path.join(save_dir, "best_preprocessed.jpg")
             try:
-                cv2.imwrite(best_path,
-                            best_img if best_img.ndim == 3
-                            else cv2.cvtColor(best_img, cv2.COLOR_GRAY2BGR),
-                            [cv2.IMWRITE_JPEG_QUALITY, 95])
-                print(f"[CAM2-OCR] 💾 best_preprocessed.jpg saved  "
-                      f"(variant={best_name}  serial={hit_serial})")
+                out = (best_img if best_img.ndim == 3
+                       else cv2.cvtColor(best_img, cv2.COLOR_GRAY2BGR))
+                cv2.imwrite(best_path, out, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                print(f"[CAM2-OCR] 💾 best_preprocessed.jpg  "
+                      f"variant={best_name}  serial={hit_serial}")
             except Exception as _e:
-                print(f"[CAM2-OCR] ⚠️  Could not save best_preprocessed.jpg: {_e}")
+                print(f"[CAM2-OCR] ⚠️  best_preprocessed.jpg write failed: {_e}")
 
         return hit_serial
-
     def _extract_serial(self, texts):
         """Legacy: used by slot live-OCR. Kept for compat."""
         for t in texts:
@@ -2198,118 +2249,114 @@ class Camera2OCR:
 
     def _ocr_worker(self):
         """
-        Per-frame OCR worker — exactly like video_test_03_cv2.py.
+        Per-frame OCR worker.
+        Reads crops from _ocr_crop_queue, runs _ocr_pipeline (all metal
+        preprocessing variants), votes on day/code/letter positions.
 
-        Flow (matches video_test_03_cv2.py process_frame loop):
-          1. Take crop from _ocr_crop_queue (put there by _yolo_infer_thread)
-          2. Preprocess: 2× upscale → grey → 2DFilter + Otsu
-          3. EasyOCR on both variants
-          4. _correct_serial() → validate 9digit+1letter
-          5. Vote: same serial STABLE_COUNT_REQ times = confirmed
-
-        Also fills save slots for PDF frame captures.
+        Every gate is logged so blocking is always visible in terminal.
+        Text file + best preprocessed image saved by _ocr_pipeline.
         """
         _frame_count = 0
+        print("[CAM2-OCR] ▶ _ocr_worker started", flush=True)
 
         while self.running:
-            # Block until a crop arrives (or 0.5s timeout to check running)
+            # ── 1. BLOCK ON QUEUE ────────────────────────────────────────
             try:
                 crop, frame, x1, y1, x2, y2, elapsed = \
                     self._ocr_crop_queue.get(timeout=0.5)
             except _queue_mod.Empty:
                 continue
 
-            # Skip only if serial already confirmed OR scanning explicitly stopped.
-            # _yolo_active=False does NOT stop us — YOLO stopping just means no new
-            # crops arrive, but we keep draining whatever is already in the queue.
-            if self.ocr_done or not self._is_scanning:
+            # ── 2. GATE: already confirmed or scanning stopped ───────────
+            if self.ocr_done:
+                print("[CAM2-OCR] gate: ocr_done=True → crop discarded", flush=True)
+                continue
+            if not self._is_scanning:
+                print("[CAM2-OCR] gate: _is_scanning=False → crop discarded "
+                      "(call start_ocr() first)", flush=True)
                 continue
 
-            # Wait for EasyOCR to be ready (lazy init)
-            if _EASYOCR_OK and self.easy_reader is None:
-                print("[CAM2-OCR] Waiting for EasyOCR…")
-                for _ in range(40):   # up to 20s
+            # ── 3. GATE: wait for EasyOCR reader ────────────────────────
+            if self.easy_reader is None:
+                if not _EASYOCR_OK:
+                    print("[CAM2-OCR] ❌ _EASYOCR_OK=False — EasyOCR import "
+                          "failed at startup.  Check: pip install easyocr", flush=True)
+                    continue
+                print("[CAM2-OCR] ⏳ EasyOCR loading — waiting up to 30s…", flush=True)
+                for _w in range(60):          # 30 s
                     time.sleep(0.5)
                     if self.easy_reader is not None:
+                        print(f"[CAM2-OCR] ✅ EasyOCR ready after {(_w+1)*0.5:.1f}s",
+                              flush=True)
                         break
                 if self.easy_reader is None:
-                    print("[CAM2-OCR] EasyOCR not ready — skipping frame")
+                    print("[CAM2-OCR] ❌ EasyOCR still None after 30s "
+                          "— crop discarded", flush=True)
                     continue
 
+            # ── 4. RUN OCR PIPELINE ──────────────────────────────────────
             _frame_count += 1
-            h, w = crop.shape[:2]
-            print(f"[CAM2-OCR] Frame #{_frame_count}  crop={w}×{h}")
+            ch, cw = crop.shape[:2]
+            print(f"[CAM2-OCR] ▶ Frame #{_frame_count}  "
+                  f"crop={cw}×{ch}  elapsed={elapsed:.2f}s", flush=True)
 
-            # ── OCR: run all 8 metal-optimised variants ─────────
-            # ✅ FIX: was "2DFilter then Otsu" (2 basic variants).
-            #       Now calls preprocess_engraved_metal() → 8 variants.
-            serial = self._ocr_pipeline(crop)
-            print(f"[CAM2-OCR] Frame #{_frame_count} result → '{serial}'")
+            serial = self._ocr_pipeline(crop)   # writes text file + best image
 
-            # ── POSITION-BASED VOTING ───────────────────────────
-            # day / code / letter each need CONFIRM_VOTES independent votes.
-            # ✅ FIX: CONFIRM_VOTES lowered 3→2.
-            #       With 8 good variants, each successful crop is high-quality.
-            #       2 matching votes is reliable confirmation.
-            #       (3 was unreachable with old 2-variant pipeline → zero detections)
+            print(f"[CAM2-OCR] ◀ Frame #{_frame_count} pipeline → '{serial}'",
+                  flush=True)
+
+            # ── 5. POSITION VOTING ───────────────────────────────────────
             if serial:
                 self.partial_serial = serial
-
-                # Extract positions — serial is always 10-char (DDMMYY+3digits+L)
                 day    = serial[0:2]
                 code   = serial[6:9]
                 letter = serial[9]
 
-                # Vote each position (only if not yet frozen)
-                if self.day_confirmed    is None: self.day_votes[day]       += 1
-                if self.code_confirmed   is None: self.code_votes[code]     += 1
+                if self.day_confirmed    is None: self.day_votes[day]    += 1
+                if self.code_confirmed   is None: self.code_votes[code]  += 1
                 if self.letter_confirmed is None: self.letter_votes[letter] += 1
 
-                d_cnt = self.day_votes[day]       if self.day_confirmed    is None else 0
-                c_cnt = self.code_votes[code]     if self.code_confirmed   is None else 0
+                d_cnt = self.day_votes[day]    if self.day_confirmed    is None else 0
+                c_cnt = self.code_votes[code]  if self.code_confirmed   is None else 0
                 l_cnt = self.letter_votes[letter] if self.letter_confirmed is None else 0
 
-                # ✅ FIX: CONFIRM_VOTES = 2 (was 3, unreachable with 2-variant pipeline)
-                CONFIRM_VOTES = 2
-                print(f"[CAM2-OCR] Vote → day='{day}'({d_cnt}/{CONFIRM_VOTES}) "
-                      f"code='{code}'({c_cnt}/{CONFIRM_VOTES}) "
-                      f"letter='{letter}'({l_cnt}/{CONFIRM_VOTES})")
+                CONFIRM_VOTES = 2   # 2 matching crops = confirmed
+                print(f"[CAM2-OCR] vote → "
+                      f"day='{day}'({d_cnt}/{CONFIRM_VOTES})  "
+                      f"code='{code}'({c_cnt}/{CONFIRM_VOTES})  "
+                      f"letter='{letter}'({l_cnt}/{CONFIRM_VOTES})", flush=True)
 
                 if d_cnt >= CONFIRM_VOTES and self.day_confirmed    is None:
-                    self.day_confirmed    = day
-                    print(f"[CAM2-OCR] ⭐ DAY FROZEN: '{day}'")
+                    self.day_confirmed = day
+                    print(f"[CAM2-OCR] ⭐ DAY FROZEN: '{day}'", flush=True)
                 if c_cnt >= CONFIRM_VOTES and self.code_confirmed   is None:
-                    self.code_confirmed   = code
-                    print(f"[CAM2-OCR] ⭐ CODE FROZEN: '{code}'")
+                    self.code_confirmed = code
+                    print(f"[CAM2-OCR] ⭐ CODE FROZEN: '{code}'", flush=True)
                 if l_cnt >= CONFIRM_VOTES and self.letter_confirmed is None:
                     self.letter_confirmed = letter
-                    print(f"[CAM2-OCR] ⭐ LETTER FROZEN: '{letter}'")
+                    print(f"[CAM2-OCR] ⭐ LETTER FROZEN: '{letter}'", flush=True)
 
-                # Update partial display
-                d_disp = self.day_confirmed    or day
-                c_disp = self.code_confirmed   or code
-                l_disp = self.letter_confirmed or letter
-                self.status = (f'Day:{d_disp} Code:{c_disp} Letter:{l_disp}')
+                self.status = (f"Day:{self.day_confirmed or day}  "
+                               f"Code:{self.code_confirmed or code}  "
+                               f"Letter:{self.letter_confirmed or letter}")
 
-                # Confirm when ALL THREE positions frozen
                 if (self.day_confirmed is not None
                         and self.code_confirmed   is not None
                         and self.letter_confirmed is not None):
                     from datetime import datetime as _dt3
                     _n3 = _dt3.now()
                     final = (self.day_confirmed
-                             + f'{_n3.month:02d}' + f'{_n3.year%100:02d}'
+                             + f"{_n3.month:02d}{_n3.year%100:02d}"
                              + self.code_confirmed
                              + self.letter_confirmed)
-                    print(f"[CAM2-OCR] ★★★ ALL 3 FROZEN → CONFIRMED: {final}")
+                    print(f"[CAM2-OCR] ★★★ CONFIRMED: {final}", flush=True)
                     self._confirm_serial(final)
                     continue
 
-            # ── Also fill save slots for PDF (keep saving best frames) ─
+            # ── 6. FILL PDF SAVE SLOTS ───────────────────────────────────
             if not self._all_slots_filled():
                 try:
-                    self._try_fill_slot(
-                        frame, crop, x1, y1, x2, y2, elapsed)
+                    self._try_fill_slot(frame, crop, x1, y1, x2, y2, elapsed)
                 except Exception:
                     pass
 
