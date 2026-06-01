@@ -19,6 +19,7 @@ PDF generated automatically once all 4 sequences complete.
 import os
 os.environ['ULTRALYTICS_OFFLINE'] = 'True'
 os.environ['YOLO_VERBOSE'] = 'False'
+os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
 
 import cv2
 def speak(text, lang='en'):
@@ -4117,7 +4118,7 @@ def _open_rtsp(url: str, width=1920, height=1080):
         return _TLSRTSPCapture(url, width=width, height=height)
     if not FFMPEG_BIN:
         print('[RTSP] ffmpeg not found — falling back to cv2.VideoCapture for RTSP')
-        cap = cv2.VideoCapture(url)
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if cap is not None and cap.isOpened():
             return cap
         print('[RTSP] cv2.VideoCapture fallback failed — ensure OpenCV supports RTSP or install ffmpeg')
