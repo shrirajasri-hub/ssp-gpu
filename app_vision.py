@@ -5654,6 +5654,83 @@ def reset_system():
     return jsonify({'success': True, 'message': 'System reset'})
 
 
+@app.route('/api/diagnostics', methods=['GET'])
+def diagnostics():
+    """
+    Comprehensive diagnostic check for serial.pt, Camera-2, and OCR status.
+    Verifies that all components are loaded and working correctly.
+    """
+    diag = {}
+    
+    # 1. Check serial.pt file
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _serial_pt_path = os.path.join(_script_dir, "models", "serial.pt")
+    if not os.path.exists(_serial_pt_path):
+        _serial_pt_path = os.path.join(SCRIPT_DIR, "models", "serial.pt")
+    
+    diag['serial_pt_path'] = _serial_pt_path
+    diag['serial_pt_exists'] = os.path.exists(_serial_pt_path)
+    if os.path.exists(_serial_pt_path):
+        diag['serial_pt_size_mb'] = round(os.path.getsize(_serial_pt_path) / (1024*1024), 1)
+    
+    # 2. Check Camera2OCR instance
+    diag['camera2_ocr_available'] = _CAM2_OCR_AVAILABLE
+    diag['camera2_ocr_instance_exists'] = camera2_ocr_instance is not None
+    
+    if camera2_ocr_instance is not None:
+        # 3. Check YOLO detector
+        diag['yolo_detector_loaded'] = camera2_ocr_instance.serial_detector is not None
+        if camera2_ocr_instance.serial_detector is not None:
+            diag['yolo_device'] = camera2_ocr_instance.serial_detector._device
+            diag['yolo_status'] = "✅ Ready"
+        else:
+            diag['yolo_status'] = f"⚠️ Loading... (still initializing)" if getattr(camera2_ocr_instance, '_yolo_loading', True) else "❌ Failed to load"
+        
+        # 4. Check EasyOCR
+        diag['easyocr_loaded'] = camera2_ocr_instance.easy_reader is not None
+        diag['easyocr_status'] = "✅ Ready" if camera2_ocr_instance.easy_reader is not None else "⚠️ Not loaded yet"
+        
+        # 5. Camera-2 frame reading status
+        diag['camera2_url'] = getattr(camera2_ocr_instance, 'url', 'N/A')[:60] if getattr(camera2_ocr_instance, 'url', None) else "Not set"
+        diag['last_frame_timestamp'] = camera2_ocr_instance._last_good_ts_global if hasattr(camera2_ocr_instance, '_last_good_ts_global') else None
+        diag['frame_reading_active'] = camera2_ocr_instance.running
+        
+        # 6. OCR scanning status
+        diag['ocr_scanning'] = camera2_ocr_instance.is_scanning
+        diag['ocr_done'] = camera2_ocr_instance.ocr_done
+        diag['current_serial'] = camera2_ocr_instance.serial_number or 'Not detected yet'
+        
+        # 7. Frame detection status
+        diag['latest_detection'] = camera2_ocr_instance._latest_det is not None
+        diag['detection_timestamp'] = camera2_ocr_instance._last_yolo_detect_ts if hasattr(camera2_ocr_instance, '_last_yolo_detect_ts') else 0
+        
+        # 8. Capture slots status
+        slots_status = []
+        for i, slot in enumerate(camera2_ocr_instance._capture_slots):
+            slots_status.append({
+                'slot': i+1,
+                'filled': slot is not None,
+                'saved': camera2_ocr_instance._slots_saved[i] if i < len(camera2_ocr_instance._slots_saved) else False
+            })
+        diag['capture_slots'] = slots_status
+        
+        # 9. Panel folder
+        diag['panel_folder'] = camera2_ocr_instance.panel_folder
+        diag['panel_folder_valid'] = os.path.isdir(camera2_ocr_instance.panel_folder)
+        
+        # 10. Overall status
+        overall_status = "✅ Fully Operational"
+        if not diag['yolo_detector_loaded']:
+            overall_status = "⚠️ YOLO loading..."
+        if not diag['easyocr_loaded']:
+            overall_status = "⚠️ EasyOCR loading..."
+        diag['overall_status'] = overall_status
+    else:
+        diag['overall_status'] = "❌ Camera2OCR not initialized"
+    
+    return jsonify(diag)
+
+
 @app.route('/api/debug', methods=['GET'])
 def debug_info():
     """Shows raw model output to diagnose class name issues."""

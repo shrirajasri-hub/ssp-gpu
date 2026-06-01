@@ -1145,7 +1145,16 @@ class Camera2OCR:
         while not self._ocr_crop_queue.empty():
             try: self._ocr_crop_queue.get_nowait()
             except: break
-        print("[CAM2] 🟢 YOLO detection activated")
+        
+        # Enhanced logging for diagnostics
+        detector_status = "✅" if self.serial_detector is not None else "❌"
+        ocr_status = "✅" if self.easy_reader is not None else "❌"
+        print(f"\n[CAM2] 🔍 OCR INITIATED:")
+        print(f"       YOLO Detector: {detector_status} {getattr(self.serial_detector, '_device', 'N/A') if self.serial_detector else 'Not loaded'}")
+        print(f"       EasyOCR:       {ocr_status} {'Ready' if self.easy_reader else 'Not loaded'}")
+        print(f"       Folder:        {self.panel_folder}")
+        print(f"       Scanning:      🟢 ACTIVE")
+        print()
 
     def stop_scanning(self):
         with self._lock:
@@ -2188,19 +2197,32 @@ class Camera2OCR:
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
             "rtsp_transport;tcp|probesize;32|"
             "analyzeduration;0|fifo_size;50000")
+        
+        print(f"[CAM2-MAINLOOP] Starting frame reader for: {self.url[:80] if self.url else 'Not set'}")
+        
         self._cap = (self.open_cap_fn(self.url)
                      if self.open_cap_fn
                      else _FFmpegCapture(self.url))
+        
+        print(f"[CAM2-MAINLOOP] ✅ Capture device initialized, reading frames...")
 
         _last_good_ts   = None
         _RECONNECT_SECS = 12.0
         _scan_active    = False
         _scan_start_ts  = None
         _last_ocr_ts    = 0.0
+        _frame_count    = 0
 
         while self.running:
             try:
                 ok, frame = self._cap.read()
+                
+                # Log first successful frame
+                if ok and frame is not None:
+                    _frame_count += 1
+                    if _frame_count == 1:
+                        fh, fw = frame.shape[:2]
+                        print(f"[CAM2-MAINLOOP] 📹 First frame received! Resolution: {fw}×{fh}")
 
                 # ── Reconnect ─────────────────────────────────
                 if not ok or frame is None or self._force_reconnect:
@@ -2208,7 +2230,7 @@ class Camera2OCR:
                     if (self._force_reconnect
                             or (_last_good_ts is not None
                                 and time.time()-_last_good_ts > timeout)):
-                        print("[CAM2] Reconnecting Camera-2 …")
+                        print("[CAM2-MAINLOOP] ⚠️ Reconnecting Camera-2...")
                         self._force_reconnect = False
                         try:
                             if hasattr(self._cap,'release'):
