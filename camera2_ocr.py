@@ -16,11 +16,11 @@ Flow
     applied to each crop → EasyOCR → voting → serial.
  6. Confirmed serial written to serial_ocr_result.txt and PDF.
 
-VDevice sharing
+GPU/CPU backend
 ───────────────
- serial.pt and best.yolo share the Hailo chip via ROUND_ROBIN
- scheduling.  app_vision.py HailoInference must also use
- ROUND_ROBIN (see note in SerialHailoDetector.__init__).
+ serial.pt uses PyTorch on CUDA GPU (automatic fallback to CPU).
+ app_vision.py also uses GPU/CPU for best.pt.
+ No Hailo hardware required.
 """
 
 print("\n" + "="*62)
@@ -127,12 +127,6 @@ try:
 except ImportError:
     _EASYOCR_OK = False
 
-# ── Hailo platform disabled ─────────────────────────────────────
-# This build is YOLO-only and does not use hailo_platform or HEF.
-_HAILO_OK             = False
-_HailoSchedulingAlg   = None
-
-
 # ═════════════════════════════════════════════════════════════════
 #  SHARPNESS SCORING
 # ═════════════════════════════════════════════════════════════════
@@ -144,310 +138,19 @@ def sharpness_score(img: np.ndarray) -> float:
 
 
 # ═════════════════════════════════════════════════════════════════
-#  SERIAL DETECTOR (legacy Hailo comments removed)
-#  This build uses YOLO-only serial detection via PyTorch/Ultralytics.
+#  REMOVED: SerialHailoDetector (Hailo HEF runtime removed).
+#  GPU build uses SerialYOLODetector (PyTorch/Ultralytics) below.
 # ═════════════════════════════════════════════════════════════════
 
 class SerialHailoDetector:
     """
-    Loads models/serial.pt.
-    Uses ROUND_ROBIN VDevice scheduling so it shares the Hailo chip
-    with best.yolo that is already loaded by app_vision.py.
+    STUB — Hailo runtime removed. This class is never instantiated.
+    Camera2OCR uses SerialYOLODetector (PyTorch GPU/CPU) exclusively.
     """
-
-    CONF_THRESHOLD = 0.15
-    CROP_PAD_PX    = 30
-    OCR_UPSCALE_FACTOR = 4
-    # Annotation colours
-    BOX_COLOR      = (0, 255, 0)    # green bbox on Camera-2 stream
-    BOX_THICKNESS  = 2
-
-    def __init__(self, yolo_path: str, shared_vdevice=None):
-        if not _HAILO_OK:
-            raise RuntimeError("hailo_platform not installed")
-        if not os.path.exists(yolo_path):
-            raise FileNotFoundError(f"serial.pt not found: {yolo_path}")
-
-        self.yolo = YOLO(yolo_path)
-
-        if shared_vdevice is not None:
-            self.device = shared_vdevice
-            print("[CAM2-YOLO] Using shared VDevice ✅")
-        else:
-            # ── ROUND_ROBIN: share device with best.yolo ───────────
-            if _HailoSchedulingAlg is not None:
-                try:
-                    params = VDevice.create_params()
-                    params.scheduling_algorithm = \
-                        _HailoSchedulingAlg.ROUND_ROBIN
-                    self.device = VDevice(params=params)
-                    print("[CAM2-YOLO] VDevice created with ROUND_ROBIN ✅")
-                except Exception as e:
-                    print(f"[CAM2-YOLO] ROUND_ROBIN failed ({e}), "
-                          "trying default VDevice")
-                    self.device = VDevice()
-            else:
-                print("[CAM2-YOLO] HailoSchedulingAlgorithm not available "
-                      "— trying default VDevice")
-                self.device = VDevice()
-
-        cfg_params = None
-        for iface in [getattr(HailoStreamInterface, 'PCIe', None),
-                      getattr(HailoStreamInterface, 'USB',  None)]:
-            if iface is None:
-                continue
-            try:
-                cfg_params = ConfigureParams.create_from_yolo(
-                    self.yolo, interface=iface)
-                break
-            except Exception:
-                continue
-        if cfg_params is None:
-            cfg_params = ConfigureParams.create_from_yolo(self.yolo)
-
-        try:
-            for _, ng_cfg in cfg_params.items():
-                if hasattr(ng_cfg, 'network_params_by_name'):
-                    for nc in ng_cfg.network_params_by_name.values():
-                        nc.batch_size = 1
-        except Exception:
-            pass
-
-        self.network_groups = self.device.configure(self.yolo, cfg_params)
-        self.ng             = self.network_groups[0]
-        self.ng_params      = self.ng.create_params()
-
-        inp_info        = self.yolo.get_input_vstream_infos()[0]
-        self.input_h    = inp_info.shape[0]
-        self.input_w    = inp_info.shape[1]
-        self.input_name = inp_info.name
-
-        self._pipe         = None
-        self._ng_ctx       = None
-        self._shape_logged = False
-        self._lock         = threading.Lock()
-        self._open_pipe()
-        print(f"[CAM2-YOLO] SerialHailoDetector ready "
-              f"({self.input_w}×{self.input_h}) ✅")
-
-    def _open_pipe(self):
-        """
-        Open VStreams using the proven API from test_yolo.py.
-        InputVStreamParams: FLOAT32 (preprocess sends float)
-        OutputVStreamParams: FLOAT32 (decode reads float)
-        Network group is activated here and kept alive.
-        """
-        ivp = InputVStreamParams.make(
-            self.ng, format_type=FormatType.FLOAT32)
-        ovp = OutputVStreamParams.make(
-            self.ng, format_type=FormatType.FLOAT32)
-        self._ng_ctx = self.ng.activate(self.ng_params)
-        self._ng_ctx.__enter__()
-        try:
-            self._pipe = InferVStreams(self.ng, ivp, ovp)
-            self._pipe.__enter__()
-        except Exception:
-            try: self._ng_ctx.__exit__(None, None, None)
-            except Exception: pass
-            self._ng_ctx = None
-            raise
-
-    def _letterbox(self, img: np.ndarray):
-        """
-        Resize preserving aspect ratio then pad to input_h × input_w.
-        Returns (letterboxed_img, scale_ratio, (pad_left, pad_top)).
-        """
-        oh, ow  = img.shape[:2]
-        ih, iw  = self.input_h, self.input_w
-        ratio   = min(iw / ow, ih / oh)
-        new_w   = int(round(ow * ratio))
-        new_h   = int(round(oh * ratio))
-        pad_l   = (iw - new_w) / 2
-        pad_t   = (ih - new_h) / 2
-        top     = int(round(pad_t - 0.1))
-        bottom  = int(round(pad_t + 0.1))
-        left    = int(round(pad_l - 0.1))
-        right   = int(round(pad_l + 0.1))
-        resized = cv2.resize(img, (new_w, new_h),
-                             interpolation=cv2.INTER_LINEAR)
-        lb      = cv2.copyMakeBorder(resized, top, bottom, left, right,
-                                     cv2.BORDER_CONSTANT,
-                                     value=(114, 114, 114))
-        return lb, ratio, (pad_l, pad_t)
-
-    def _infer_raw(self, frame_bgr: np.ndarray):
-        """
-        Preprocess frame → letterbox → FLOAT32 / 255.0
-        Run inference using proven VStreams API from test_yolo.py.
-        Returns (raw_output_dict, scale_ratio, (pad_left, pad_top)).
-        """
-        lb, ratio, pad = self._letterbox(frame_bgr)
-        # FLOAT32 normalised — matches FormatType.FLOAT32 VStream
-        inp = np.ascontiguousarray(
-            lb[np.newaxis].astype(np.float32) / 255.0)
-        with self._lock:
-            try:
-                raw = self._pipe.infer({self.input_name: inp})
-            except Exception as e:
-                print(f"[CAM2-YOLO] Pipe error, reopening: {e}")
-                try:
-                    if self._pipe:   self._pipe.__exit__(None, None, None)
-                except Exception: pass
-                try:
-                    if self._ng_ctx: self._ng_ctx.__exit__(None, None, None)
-                except Exception: pass
-                self._pipe   = None
-                self._ng_ctx = None
-                try:
-                    self._open_pipe()
-                except Exception as reopen_err:
-                    print(f"[CAM2-YOLO] Pipe reopen failed: {reopen_err}")
-                    return {}, ratio, pad
-                raw = self._pipe.infer({self.input_name: inp})
-        return raw, ratio, pad
-
-    def detect(self, frame_bgr: np.ndarray) -> list:
-        """Run inference; return detections in original frame pixel coords."""
-        try:
-            ih, iw          = frame_bgr.shape[:2]
-            raw, ratio, pad = self._infer_raw(frame_bgr)
-            return self._decode(raw, iw, ih, ratio, pad)
-        except Exception as e:
-            print(f"[CAM2-YOLO] detect() error: {e}")
-            return []
-
-    def _decode(self, raw: dict, ow: int, oh: int,
-                ratio: float = 1.0,
-                pad: tuple   = (0.0, 0.0)) -> list:
-        """
-        Decode serial.pt output — proven working from test_yolo.py.
-
-        Our serial.pt (nms=False) outputs:
-          best416/concat14    → (3549, 64)  raw DFL bbox
-          best416/activation1 → (3549,  1)  class score [0..1]
-
-        3549 = 52×52 + 26×26 + 13×13 (three YOLO detection scales at 416px)
-        DFL bbox: 4 × 16 bins, softmax → weighted sum → lt_x,lt_y,rb_x,rb_y
-        Reverse letterbox maps back to original frame pixels.
-        """
-        pad_l, pad_t = pad
-        dets = []
-
-        # ── Extract the two output arrays ─────────────────────────────────
-        bbox_raw = None
-        cls_raw  = None
-        for name, val in raw.items():
-            if isinstance(val, list):
-                val = val[0] if val else None
-            if val is None:
-                continue
-            if not isinstance(val, np.ndarray):
-                val = np.array(val)
-            arr = np.squeeze(val)
-            if 'concat14' in name or (arr.ndim == 2 and arr.shape[-1] == 64):
-                bbox_raw = arr.reshape(-1, 64)   # always (3549, 64)
-            elif 'activation1' in name or (arr.ndim <= 2 and arr.shape[0] in (3549, 2100)):
-                cls_raw  = arr.reshape(-1, 1)    # always (3549, 1) even if squeezed to 1D
-            # Log shape on first frame for diagnostics
-            _fc = getattr(self, '_yolo_frame_count', 0) + 1
-            self._yolo_frame_count = _fc
-            if _fc == 1 or _fc % 300 == 0:
-                print(f"[CAM2-YOLO] frame#{_fc} '{name}' "
-                      f"shape={arr.shape}")
-
-        if bbox_raw is None or cls_raw is None:
-            return []
-
-        # ── DFL softmax decode ─────────────────────────────────────────────
-        strides    = [8, 16, 32]
-        grid_sizes = [52, 26, 13]
-        anchor_idx = 0
-
-        for stride, grid in zip(strides, grid_sizes):
-            for gy in range(grid):
-                for gx in range(grid):
-                    cls_score = float(cls_raw[anchor_idx, 0])
-                    if cls_score < self.CONF_THRESHOLD:
-                        anchor_idx += 1
-                        continue
-
-                    # Softmax over 16 bins then weighted sum
-                    bbox = bbox_raw[anchor_idx].copy().reshape(4, 16)
-                    e    = np.exp(bbox - bbox.max(axis=1, keepdims=True))
-                    bbox = e / e.sum(axis=1, keepdims=True)
-                    bbox = np.sum(
-                        bbox * np.arange(16, dtype=np.float32), axis=1)
-                    lt_x, lt_y, rb_x, rb_y = bbox
-
-                    # Grid cell centre in letterboxed coords
-                    cx_lb = (gx + 0.5) * stride
-                    cy_lb = (gy + 0.5) * stride
-
-                    # Back to original frame coords via reverse letterbox
-                    x1 = int(np.clip(
-                        (cx_lb - lt_x * stride - pad_l) / ratio, 0, ow))
-                    y1 = int(np.clip(
-                        (cy_lb - lt_y * stride - pad_t) / ratio, 0, oh))
-                    x2 = int(np.clip(
-                        (cx_lb + rb_x * stride - pad_l) / ratio, 0, ow))
-                    y2 = int(np.clip(
-                        (cy_lb + rb_y * stride - pad_t) / ratio, 0, oh))
-
-                    if x2 > x1 and y2 > y1:
-                        dets.append((x1, y1, x2, y2, cls_score))
-
-                    anchor_idx += 1
-
-        # ── NMS ───────────────────────────────────────────────────────────
-        if dets:
-            boxes  = [[x1, y1, x2-x1, y2-y1]
-                      for x1, y1, x2, y2, _ in dets]
-            scores = [float(d[4]) for d in dets]
-            idxs   = cv2.dnn.NMSBoxes(
-                boxes, scores, self.CONF_THRESHOLD, 0.45)
-            if len(idxs) > 0:
-                dets = [dets[i] for i in idxs.flatten()]
-
-        dets.sort(key=lambda d: d[4], reverse=True)
-        return dets
-
-    def best_crop(self, frame_bgr: np.ndarray):
-        """Returns (crop, x1, y1, x2, y2) — (None,0,0,0,0) if no detection."""
-        ih, iw = frame_bgr.shape[:2]
-        dets = self.detect(frame_bgr)
-        if not dets:
-            return None, 0, 0, 0, 0
-        x1,y1,x2,y2,_ = dets[0]
-        p   = self.CROP_PAD_PX
-        cx1=max(0,x1-p); cy1=max(0,y1-p)
-        cx2=min(iw,x2+p); cy2=min(ih,y2+p)
-        return frame_bgr[cy1:cy2, cx1:cx2].copy(), cx1, cy1, cx2, cy2
-
-    def annotate(self, frame_bgr: np.ndarray,
-                  bbox,           # (x1,y1,x2,y2,conf) or None
-                  label: str = "serial") -> np.ndarray:
-        """Draw detection bbox on frame (used for Camera-2 UI stream)."""
-        out = frame_bgr.copy()
-        if bbox is None:
-            return out
-        x1,y1,x2,y2,conf = bbox
-        cv2.rectangle(out, (x1,y1), (x2,y2),
-                      self.BOX_COLOR, self.BOX_THICKNESS)
-        txt = f"{label} {conf:.2f}"
-        cv2.putText(out, txt, (x1, max(y1-6, 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                    self.BOX_COLOR, 2, cv2.LINE_AA)
-        return out
-
-    def close(self):
-        try:
-            if self._pipe:   self._pipe.__exit__(None, None, None)
-        except Exception as e:
-            print(f"[CAM2-YOLO] _pipe close error: {e}")
-        try:
-            if self._ng_ctx: self._ng_ctx.__exit__(None, None, None)
-        except Exception as e:
-            print(f"[CAM2-YOLO] _ng_ctx close error: {e}")
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Hailo runtime removed — use SerialYOLODetector (GPU/CPU)"
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -916,6 +619,8 @@ class Camera2OCR:
         self._frames_saved        = 0
         self._lock                = threading.Lock()
         self._cap                 = None
+        self._frame_count         = 0  # total Camera-2 frames received (diagnostics)
+        self._yolo_det_count      = 0  # total frames where serial.pt fired a detection
 
         # app_vision.py compat attributes
         self.partial_serial       = None
@@ -1027,22 +732,32 @@ class Camera2OCR:
         self._ocr_crop_queue    = _queue_mod.Queue(maxsize=0)   # unlimited — keep ALL SEQ1 crops
         self._scan_start_ts_ref = [0.0]   # for elapsed calc in YOLO thread
 
-        threading.Thread(target=self._main_loop,        daemon=True).start()
-        threading.Thread(target=self._ocr_worker,       daemon=True).start()
-        threading.Thread(target=self._yolo_infer_thread, daemon=True).start()
-
-        # ── [FIX] Always-on YOLO — activate immediately after threads start ──
-        # serial.pt must run from the first Camera-2 frame so that:
-        #   1. The UI shows the green serial bbox immediately (no waiting for start_ocr).
-        #   2. app_vision.py has_serial check works: get_latest_detection() returns
-        #      a real detection, unblocking the SEQ1 snapshot gate.
-        # OCR data push to _ocr_crop_queue is separately gated by _is_scanning
-        # (set by start_ocr()), so EasyOCR voting is still scan-scoped.
-        # Previous value (False) meant no inference ever ran until start_ocr(),
-        # creating a chicken-and-egg deadlock: no detection → snapshot never taken
-        # → OCR never started → scanning never active → detection never ran.
+        # ── FIX: Set _yolo_active = True BEFORE threads start ──────────────
+        # serial.pt must run from the first Camera-2 frame so:
+        #   1. UI shows live green bbox immediately (no waiting for start_ocr).
+        #   2. get_latest_detection() is unblocked for SEQ1 snapshot gate.
+        # OCR crop queue is still gated by _is_scanning (set by start_ocr()),
+        # so EasyOCR voting only runs when the operator starts wiping.
         self._yolo_active = True
-        print("[CAM2] ✅ YOLO always-on activated — serial.pt running from first frame")
+        print("[CAM2] ✅ YOLO always-on pre-activated — will run from first frame")
+
+        # ── Start frame reader first, then YOLO, then OCR worker ────────────
+        threading.Thread(target=self._main_loop,         daemon=True).start()
+        # Give the reader a moment to connect and receive the first frame
+        # before the YOLO thread tries to read _yolo_latest_frame.
+        # On fast GPU systems this is negligible; on Pi it prevents a
+        # 0.5 s window where YOLO thread sees None and does nothing useful.
+        _t0 = time.time()
+        while self._raw_frame is None and (time.time() - _t0) < 3.0:
+            time.sleep(0.05)
+        if self._raw_frame is not None:
+            print("[CAM2] ✅ First Camera-2 frame ready — starting YOLO + OCR threads")
+        else:
+            print("[CAM2] ⚠️  Camera-2 first frame not received in 3s — "
+                  "starting threads anyway (will process once stream connects)")
+        threading.Thread(target=self._yolo_infer_thread, daemon=True).start()
+        threading.Thread(target=self._ocr_worker,        daemon=True).start()
+        print("[CAM2] ✅ All Camera-2 threads running — serial.pt active from first frame")
 
     # ─────────────────────────────────────────────────────────
     #  PUBLIC API
@@ -2170,13 +1885,19 @@ class Camera2OCR:
                                 __import__('cv2').cvtColor(crop, __import__('cv2').COLOR_BGR2GRAY)
                                 if len(crop.shape) == 3 else crop,
                                 0x06).var())  # CV_64F = 6
-                        if _c_sharp < 3.0:
-                            print(f'[CAM2-YOLO] Skipped blurry crop sharp={_c_sharp:.1f}')
+                        # Threshold 5.0 suits engraved metal serials (low Laplacian variance).
+                        # Was 3.0 — raised slightly to skip clearly-blurry motion frames.
+                        _SHARP_MIN = 5.0
+                        if _c_sharp < _SHARP_MIN:
+                            print(f'[CAM2-YOLO] Blurry crop skipped sharp={_c_sharp:.1f} '
+                                  f'(min={_SHARP_MIN}) — waiting for sharper frame')
                         else:
+                            self._yolo_det_count += 1
                             self._ocr_crop_queue.put_nowait(
                                 (crop.copy(), frame.copy(),
                                  x1, y1, x2, y2, elapsed))
-                            print(f'[CAM2-YOLO] Queued crop sharp={_c_sharp:.1f} '
+                            print(f'[CAM2-YOLO] ✅ Queued crop #{self._yolo_det_count} '
+                                  f'sharp={_c_sharp:.1f} '
                                   f'@ {elapsed:.2f}s  q={self._ocr_crop_queue.qsize()}')
                     except Exception as e:
                         print(f"[CAM2-YOLO] Queue push error: {e}")
@@ -2248,6 +1969,13 @@ class Camera2OCR:
                 self._last_good_ts_global = _last_good_ts
                 with self._lock:
                     self.last_frame = frame
+
+                # Count frames and log first arrival
+                self._frame_count += 1
+                if self._frame_count == 1:
+                    fh, fw = frame.shape[:2]
+                    print(f"[CAM2-MAINLOOP] 📹 First Camera-2 frame: {fw}×{fh}  "
+                          f"serial.pt {'loaded ✅' if self.serial_detector is not None else 'loading...'}")
 
                 # ── FAST PATH: push raw frame to UI immediately ──────
                 # _raw_frame is used by get_annotated_frame_with_det()

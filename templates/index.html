@@ -801,13 +801,15 @@
             left: 0;
             width: 100%;
             z-index: 9999;
-            padding: 14px 20px;
+            padding: 18px 24px;
             text-align: center;
-            font-size: 22px;
-            font-weight: 700;
-            letter-spacing: 0.04em;
+            font-size: 36px;           /* BIG TEXT — visible from 3m away */
+            font-weight: 900;
+            letter-spacing: 0.06em;
+            line-height: 1.25;
             color: #fff;
-            box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+            text-shadow: 0 2px 8px rgba(0,0,0,0.55);
+            box-shadow: 0 6px 24px rgba(0,0,0,0.45);
             transition: background 0.4s ease;
             cursor: default;
             user-select: none;
@@ -840,9 +842,9 @@
             100% { opacity: 1.0; }
         }
 
-        /* Push content down when banner is visible */
+        /* Push content down when banner is visible (36px text + 18px*2 padding = 90px) */
         body.landscape-alert-visible {
-            padding-top: 58px;
+            padding-top: 90px;
         }
     </style>
 </head>
@@ -2157,9 +2159,9 @@
             const body      = document.body;
             let prevAlert   = "";
             const MESSAGES = {
-                "seq2":     "📐 SEQ 2 — PLACE PANEL IN LANDSCAPE POSITION &nbsp;|&nbsp; पैनल को landscape में रखें",
-                "seq3":     "📐 SEQ 3 — PLACE PANEL IN LANDSCAPE POSITION &nbsp;|&nbsp; पैनल को landscape में रखें",
-                "captured": "✅ CAPTURED! — SEQ COMPLETE &nbsp;|&nbsp; फोटो ले लिया ✓"
+                "seq2":     "🔄 SEQUENCE 2 — PLACE PANEL LANDSCAPE &nbsp;|&nbsp; पैनल को landscape में रखें &nbsp;| Full image capture required",
+                "seq3":     "🔄 SEQUENCE 3 — PLACE PANEL LANDSCAPE &nbsp;|&nbsp; पैनल को landscape में रखें &nbsp;| Full image capture required",
+                "captured": "✅ IMAGE CAPTURED — SEQUENCE COMPLETE &nbsp;|&nbsp; फोटो सफलतापूर्वक लिया गया ✓"
             };
             const CLASS_MAP = {
                 "seq2":     "alert-seq2",

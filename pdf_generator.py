@@ -312,7 +312,7 @@ def generate_pdf_report(serial_number, panel_folder, seq_times=None, total_time=
         row_imgs, row_labels = [], []
 
         if _roi_frames and os.path.exists(_roi_frames[0]):
-            row_labels.append(Paragraph("<b>Detection region (HEF bbox)</b>", sub_style))
+            row_labels.append(Paragraph("<b>Detection region (YOLO bbox)</b>", sub_style))
             row_imgs.append(_fit_image(_roi_frames[0], half_w, 3.5*inch))
             print(f"  [PDF] ROI annotated → {os.path.basename(_roi_frames[0])}")
         elif _appeared_frames:

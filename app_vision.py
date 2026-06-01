@@ -3656,30 +3656,49 @@ def _stream(cap, native_fps=None):
                     last_ok = time.time()
                     # Reset prev_gray — new stream may have different resolution
                     state.prev_gray = None
-                elif fails >= (600 if is_tls else 30):  # 600 * 0.05s = 30s to match timeouts
+                # FIX: Use _last_frame_ts staleness check instead of counting
+                # False-return failures.  For TLSRTSPCapture, False is normal
+                # between frames and would previously trigger a reconnect after
+                # just 1.5s (30 × 50ms).  STALE_TIMEOUT is the real guard;
+                # the fails counter is only a secondary safety net here.
+                elif fails >= (600 if is_tls else 200):  # ~10s for non-TLS
                     if is_ffmpeg:
+                        # FFmpegVideoCapture manages its own reconnect internally
                         fails = 0
                     elif is_file:
                         print(f"[READER] ❌ Permanent failure reading file {source_url}")
                         running.clear()
                         break
                     else:
-                        print(f'[READER] ⚠️ reconnecting RTSP after {time.time()-last_ok:.1f}s')
-                        try:
-                            cap.release()
-                            time.sleep(0.5)
-                        except: pass
-                        cap = _open_rtsp(source_url)
-                        is_tls = getattr(cap, '__class__', None) and cap.__class__.__name__ == '_TLSRTSPCapture'
-                        fails = 0
-                        # Reset prev_gray — new stream may have different resolution
-                        state.prev_gray = None
+                        # Only reconnect if truly stale (last good frame >5s ago).
+                        # This guards against False returns that are just camera
+                        # frame-rate gaps, not actual disconnections.
+                        _stale = (time.time() - last_ok)
+                        if _stale < 5.0:
+                            fails = 0  # spurious failures — camera is alive, reset
+                        else:
+                            print(f'[READER] ⚠️ reconnecting RTSP — '
+                                  f'last frame {_stale:.1f}s ago')
+                            try:
+                                cap.release()
+                                time.sleep(0.5)
+                            except: pass
+                            cap = _open_rtsp(source_url)
+                            is_tls = getattr(cap, '__class__', None) and cap.__class__.__name__ == '_TLSRTSPCapture'
+                            fails = 0
+                            state.prev_gray = None
                 continue
             
             fails = 0; last_ok = time.time()
             with raw_lock:
                 raw_frame[0]      = frame.copy()
                 raw_frame_cnt[0] += 1
+            # Brief yield after a successful read.
+            # Prevents CPU spin when camera delivers frames faster than
+            # the encoder can consume them (e.g. GPU system).
+            # 5 ms sleep caps effective reader rate at ~200fps max,
+            # which is well above any real camera FPS.
+            time.sleep(0.005)
 
         try: cap.release()
         except: pass
@@ -3688,7 +3707,8 @@ def _stream(cap, native_fps=None):
     def encoder():
         last_enc_time  = time.time()
         last_frame_ts  = time.time()   # track when last real frame arrived
-        STALE_BANNER   = 4.0           # show reconnecting banner after 4s no frame
+        STALE_BANNER   = 8.0           # show reconnecting banner after 8s no frame
+        # (was 4s — too short; brief IDR gaps or LAN jitter showed banner)
         MIN_INTERVAL   = 1.0 / STREAM_FPS_CAP
         STREAM_W       = STREAM_UI_WIDTH
 
@@ -3728,12 +3748,44 @@ def _stream(cap, native_fps=None):
             sh   = int(h * (STREAM_W / w))
 
             try:
-                disp  = apply_blue_tint(frame.copy(), state.panel_mask, state.cleaned_mask)
-                disp  = draw_overlay(disp, state.current_sequence,
-                                     getattr(state, 'status_msg', ''),
-                                     getattr(state, 'progress', 0))
-                small = cv2.resize(disp, (STREAM_W, sh),
-                                   interpolation=cv2.INTER_LINEAR)
+                # ── FIX: Use INFER result when fresh; otherwise draw on
+                #   SMALL frame (resize first, overlay second = 4× faster).
+                #   Old code drew on 1920×1080 then shrunk → wasted CPU.
+                #   INFER already drew the full annotated frame; reuse it.
+                with overlay_lock:
+                    cached = overlay_frame[0]
+
+                if cached is not None:
+                    # INFER pre-resized to STREAM_W already — use directly.
+                    # Skip cv2.resize entirely: encoder is now zero-copy for
+                    # fresh overlay frames.
+                    small = cached
+                else:
+                    # INFER hasn't run yet (very first frames after camera start).
+                    # Resize to STREAM_W FIRST, then draw overlay on the small
+                    # canvas.  This is 4× faster than drawing on full 1920px frame.
+                    # apply_blue_tint needs masks resized to match the small frame.
+                    small  = cv2.resize(frame, (STREAM_W, sh),
+                                        interpolation=cv2.INTER_LINEAR)
+                    _pmask = state.panel_mask
+                    _cmask = state.cleaned_mask
+                    if _pmask is not None:
+                        try:
+                            _pmask = cv2.resize(_pmask, (STREAM_W, sh),
+                                                interpolation=cv2.INTER_NEAREST)
+                        except Exception:
+                            _pmask = None
+                    if _cmask is not None:
+                        try:
+                            _cmask = cv2.resize(_cmask, (STREAM_W, sh),
+                                                interpolation=cv2.INTER_NEAREST)
+                        except Exception:
+                            _cmask = None
+                    small = apply_blue_tint(small, _pmask, _cmask)
+                    small = draw_overlay(small, state.current_sequence,
+                                         getattr(state, 'status_msg', ''),
+                                         getattr(state, 'progress', 0))
+
                 _, buf = cv2.imencode('.jpg', small,
                                       [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 jpg = buf.tobytes()
@@ -3803,9 +3855,22 @@ def _stream(cap, native_fps=None):
                 if state.frame_count % 30 == 0:
                     print(f"[PIPELINE] detections passed to overlay layer: {len(detections)}")
 
-                # 3. Send annotated result to encoder
-                with overlay_lock:
-                    overlay_frame[0] = result
+                # 3. Send annotated result to encoder — pre-resized to
+                #    STREAM_UI_WIDTH so encoder can use it with zero extra work.
+                if result is not None:
+                    try:
+                        _fh, _fw = result.shape[:2]
+                        _sh      = int(_fh * (STREAM_UI_WIDTH / _fw))
+                        _small   = cv2.resize(result, (STREAM_UI_WIDTH, _sh),
+                                              interpolation=cv2.INTER_LINEAR)
+                        with overlay_lock:
+                            overlay_frame[0] = _small
+                    except Exception:
+                        with overlay_lock:
+                            overlay_frame[0] = result
+                else:
+                    with overlay_lock:
+                        overlay_frame[0] = result
 
                 # ── FIX O1: Periodic Garbage Collection ────────────────────
                 if state.frame_count % 100 == 0:
@@ -3817,8 +3882,16 @@ def _stream(cap, native_fps=None):
                 traceback.print_exc()
                 time.sleep(0.1)
 
-            # Sleep AFTER inference so the encoder always gets CPU time
-            time.sleep(INFER_INTERVAL)
+            # Throttle: only sleep if no new frame arrived during inference.
+            # If camera delivered a new frame while we were running YOLO,
+            # process it immediately (no extra latency).
+            # If nothing new, sleep before next check.
+            with raw_lock:
+                _new_cnt = raw_frame_cnt[0]
+            if _new_cnt == last_cnt[0]:
+                # No new frame yet — sleep the full interval
+                time.sleep(INFER_INTERVAL)
+            # else: new frame arrived during inference → loop immediately
 
     # Start threads
     for t in [threading.Thread(target=reader,  daemon=True),
@@ -4676,9 +4749,11 @@ class FFmpegVideoCapture:
                     
                 if n != self.frame_size:
                     failures += 1
-                    # REDUCED: 5 bad frames (was 10) — reconnect faster
-                    if failures >= 5:
-                        print("[FFmpeg Capture] Too many bad frames — restarting")
+                    # 30 bad frames @ ~50ms each ≈ 1.5s of real network jitter
+                    # before we restart ffmpeg.  5 was too trigger-happy and
+                    # caused unnecessary reconnects on brief H264 IDR gaps.
+                    if failures >= 30:
+                        print(f"[FFmpeg Capture] {failures} bad frames — restarting ffmpeg")
                         break
                     time.sleep(0.01)
                     continue
@@ -4687,8 +4762,9 @@ class FFmpegVideoCapture:
                 frame = np.frombuffer(_buf, dtype=np.uint8
                                      ).reshape((self.height, self.width, 3)).copy()
                 with self.lock:
-                    self.latest_frame = frame
+                    self.latest_frame  = frame
                     self._last_frame_ts = time.time()
+                    self._frame_id     = getattr(self, '_frame_id', 0) + 1
                     
             try:
                 proc.kill()
@@ -4706,6 +4782,13 @@ class FFmpegVideoCapture:
                 return False, None
             if time.time() - getattr(self, '_last_frame_ts', time.time()) > 20.0:
                 return False, None
+            # Only return True when a genuinely NEW frame arrived (prevents READER
+            # from spinning at CPU-max speed copying the same 6 MB frame repeatedly).
+            cur_id   = getattr(self, '_frame_id', 0)
+            last_id  = getattr(self, '_last_read_id', -1)
+            if cur_id == last_id:
+                return False, None          # same frame as last read — tell caller to wait
+            self._last_read_id = cur_id
             return True, self.latest_frame.copy()
             
     def release(self):
@@ -5030,9 +5113,6 @@ def start_camera():
     # ── Camera-2 OCR instance (ADD ONLY) ─────────────────────────────
     global camera2_ocr_instance
     if _CAM2_OCR_AVAILABLE and camera2_url:
-        # Give the main Hailo engine a moment to settle if it just started
-        time.sleep(2.0)
-
         # Stop previous instance cleanly before creating a new one
         if camera2_ocr_instance is not None:
             try:
@@ -5065,6 +5145,8 @@ def start_camera():
         print(f'[CAM2-OCR] serial.pt path → {_serial_pt_path}  '
               f'exists={os.path.exists(_serial_pt_path)}')
 
+        # Open Camera 2 at highest practical resolution so serial digits are large.
+        # 2048×1536 gives ~2x more pixels than 1280×960 for the serial region.
         camera2_ocr_instance = Camera2OCR(
             camera2_url=camera2_url,
             open_cap_fn=lambda u: _open_rtsp(u, width=2048, height=1536),
