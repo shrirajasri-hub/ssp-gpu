@@ -2058,9 +2058,9 @@ def update_seq(new_seq):
         state.seq3_consec_wipe_frames = 0   # strict consecutive counter — reset on seq change
         
         if new_seq == 3:
-            state.status_msg = "SEQ3 ACTIVE — capture landscape image"
+            state.status_msg = "SEQ3 ACTIVE"
         elif new_seq == 2:
-            state.status_msg = "SEQ2 ACTIVE — capture landscape image"
+            state.status_msg = "SEQ2 ACTIVE"
         else:
             state.status_msg = f"SEQ{new_seq} ACTIVE"
         if state.seq_start_time.get(new_seq) is None:
@@ -3367,16 +3367,6 @@ def process_frame(frame, detections):
             # SEQ2 detected but confidence too low
             print(f"[SEQ1] ⚠️ SEQ2 detected but low confidence: {s2_conf:.2f} < 0.60 — "
                   f"requiring stronger detection")
-    # ── 9c. SEQ2 Completion — TIME-BASED gates (not frame counts).
-    # Unreachable code removed: SEQ2 rescue logic during SEQ3.
-            if state.seq_start_time.get(3):
-                state.seq_end_time[2] = state.seq_start_time[3]
-            if state.current_sequence == 3 and not state.completed.get(3, False):
-                state.landscape_alert    = "seq3"
-                state.landscape_alert_ts = time.time()
-                state.status_msg = "SEQ3 ACTIVE — capture landscape image"
-                _announce_landscape(3)
-            
         elif s2_pct < 90 and seq3_secs >= 2.0:
             print(f"[SEQ2] 🚫 BLOCKED — wipe progress insufficient "
                   f"(progress={s2_pct}%, need >= 90%)")
