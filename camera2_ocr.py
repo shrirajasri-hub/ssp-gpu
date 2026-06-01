@@ -319,10 +319,9 @@ class SerialYOLODetector:
     """
 
     CROP_PAD_PX    = 30
-    # serial_number is class index 4 in best.pt / serial.pt.
-    # Some YOLO models may return alternate labels like 'serial' or
-    # 'serial_number_region' depending on how they were exported.
-    SERIAL_CLASSES = {'serial_number', 'serial', 'serial_number_region'}
+    # Some YOLO exports may label the serial class as 'serial' or
+    # 'serial_number'. Accept both so annotations are not dropped.
+    VALID_SERIAL_CLASSES = {'serial', 'serial_number'}
     CONF_THRESHOLD = 0.30
 
     def __init__(self, pt_path: str):
@@ -378,7 +377,7 @@ class SerialYOLODetector:
                 for box in results[0].boxes:
                     cls_id = int(box.cls[0])
                     cls_name = names.get(cls_id, '')
-                    if cls_name not in self.SERIAL_CLASSES and cls_id != 4:
+                    if cls_name not in self.VALID_SERIAL_CLASSES and cls_id != 4:
                         continue
                     x1, y1, x2, y2 = (int(v) for v in
                                        box.xyxy[0].cpu().numpy())
