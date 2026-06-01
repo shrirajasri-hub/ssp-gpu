@@ -377,12 +377,21 @@ class SerialYOLODetector:
                 for box in results[0].boxes:
                     cls_id = int(box.cls[0])
                     cls_name = names.get(cls_id, '')
+                    # DEBUG: log the first detection to see actual class names
+                    if not hasattr(self, '_logged_class_names'):
+                        print(f'[CAM2-YOLO] First detection: cls_id={cls_id}, cls_name="{cls_name}"')
+                        print(f'[CAM2-YOLO] All classes map: {names}')
+                        self._logged_class_names = True
+                    
                     if cls_name not in self.VALID_SERIAL_CLASSES and cls_id != 4:
                         continue
                     x1, y1, x2, y2 = (int(v) for v in
                                        box.xyxy[0].cpu().numpy())
                     conf = float(box.conf[0].cpu().numpy())
                     dets.append((x1, y1, x2, y2, conf))
+                    if not hasattr(self, '_serial_det_logged'):
+                        print(f'[CAM2-YOLO] ✅ Serial detection accepted: "{cls_name}" (conf={conf:.2f})')
+                        self._serial_det_logged = True
             return dets
         except Exception as e:
             print(f'[CAM2-YOLO] detect() error: {e}')

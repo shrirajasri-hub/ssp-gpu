@@ -1001,9 +1001,14 @@ def allocate_panel_folder_for_seq1(serial_present=False):
         state.panel_id = datetime.now().strftime("%H%M%S")
         state.current_sequence_panel_folder = get_panel_folder(
             state.serial_number or 'SSP-SEQ', state.panel_id)
-        print(f"[SEQ1] Early panel folder created: {state.current_sequence_panel_folder}")
+        print(f"[SEQ1-FOLDER] ✅ Panel folder created (EARLY - 2 stable frames + serial)")
+        print(f"[SEQ1-FOLDER]    Path: {state.current_sequence_panel_folder}")
+        print(f"[SEQ1-FOLDER]    Panel ID: {state.panel_id}")
+        print(f"[SEQ1-FOLDER]    Detection count: {state.seq1_detection_count}")
+        print(f"[SEQ1-FOLDER]    Current sequence: {state.current_sequence}")
         if _CAM2_OCR_AVAILABLE and camera2_ocr_instance is not None:
             camera2_ocr_instance.set_panel_folder(state.current_sequence_panel_folder)
+            print(f"[SEQ1-FOLDER]    Camera-2 folder assigned")
 
     return state.current_sequence_panel_folder
 
@@ -2673,14 +2678,16 @@ def process_frame(frame, detections):
 
         if state.seq1_detection_count == 1:
             state.status_msg = "SEQ1 Panel Detected — stabilising..."
-            print(f"[SEQ1] Panel detected — waiting for 2 stable frames")
+            print(f"[SEQ1-DET] Frame {state.frame_count}: Panel detected (conf={raw_seq_id})")
 
         # 2 consecutive clean frames → take snapshot
         should_capture = False
         if state.seq1_detection_count >= 2:
             should_capture = True
-            print(f"[SEQ1] ✅ Panel stable for "
-                  f"{state.seq1_detection_count} frames — taking snapshot")
+            print(f"[SEQ1-DET] ✅ Frame {state.frame_count}: Panel stable for "
+                  f"{state.seq1_detection_count} frames")
+            print(f"[SEQ1-DET]    serial_det present: {serial_det is not None}")
+            print(f"[SEQ1-DET]    current_sequence: {state.current_sequence}")
 
         if should_capture and state.seq1_snapshot_data is None:
             frame_sharp = cv2.Laplacian(
@@ -2761,8 +2768,17 @@ def process_frame(frame, detections):
             camera2_ocr_instance.set_panel_folder(folder)
             camera2_ocr_instance.start_ocr()
             state.ocr_started = True
-            print('[CAM2-OCR] 🔄 OCR triggered by panel PORTRAIT TILT '
-                  '(serial face now pointing at Camera-2)')
+            print('[CAM2-OCR] 🔄 OCR TRIGGERED by PORTRAIT TILT')
+            print(f'[CAM2-OCR]    Serial now pointing at Camera-2')
+            print(f'[CAM2-OCR]    Panel folder: {folder}')
+            print(f'[CAM2-OCR]    YOLO ready: {camera2_ocr_instance.serial_detector is not None}')
+    elif _panel_is_portrait and state.seq1_snapshot_data is not None:
+        print(f'[CAM2-OCR] Portrait detected but OCR start conditions not met:')
+        print(f'           seq == 1: {state.current_sequence == 1}')
+        print(f'           snapshot_data: {state.seq1_snapshot_data is not None}')
+        print(f'           ocr_started: {getattr(state, "ocr_started", False)}')
+        print(f'           CAM2_AVAILABLE: {_CAM2_OCR_AVAILABLE}')
+        print(f'           camera2_instance: {camera2_ocr_instance is not None}')
 
     # ── 5. Update panel contour + mask from detection ─────────────
     if panel_det is not None:
