@@ -457,7 +457,8 @@ class _FFmpegCapture:
         host=self._proxy_host; port=self.PROXY_PORT
         try:
             t=_s.create_connection(('127.0.0.1',port),timeout=0.3); t.close(); return
-        except Exception: pass
+        except Exception as e:
+            print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
         def handle(c):
             ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
@@ -471,7 +472,8 @@ class _FFmpegCapture:
                         d=a.recv(8192)
                         if not d: break
                         b.sendall(d)
-                except Exception: pass
+                except Exception as e:
+                    print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
             threading.Thread(target=pipe,args=(c,cam),daemon=True).start()
             threading.Thread(target=pipe,args=(cam,c),daemon=True).start()
         def srv():
@@ -750,10 +752,14 @@ class Camera2OCR:
 
         def _init_paddle():
             import traceback
+            print("[CAM2] Initializing PaddleOCR...", flush=True)
             print('[CAM2] ⏳ _init_paddle started…', flush=True)
             try:
                 from paddleocr import PaddleOCR as _PaddleOCR
-            except ImportError:
+            except ImportError as e:
+                print("[CAM2] ❌ PaddleOCR initialization FAILED", flush=True)
+                print(f"[CAM2] Error: {str(e)}", flush=True)
+                import traceback; traceback.print_exc()
                 print('[CAM2] ❌ PaddleOCR missing — pip install paddleocr paddlepaddle-gpu', flush=True)
                 self._paddle_init_failed = True; self._paddle_init_done = True; return
             use_gpu = False; gpu_name = 'CPU'
@@ -774,11 +780,16 @@ class Camera2OCR:
                         use_textline_orientation=True, lang='en',
                         enable_mkldnn=False, ocr_version='PP-OCRv5',
                         device=_dev, show_log=False)
+                    print("[CAM2] ✅ PaddleOCR loaded successfully", flush=True)
+                    print(f"[CAM2] PaddleOCR object: {self.paddle_reader}", flush=True)
                     print(f'[CAM2] ✅ PaddleOCR ready  device={_dev}  gpu={gpu_name}', flush=True)
                     self._paddle_init_done = True; return
                 except Exception as _e:
+                    print("[CAM2] ❌ PaddleOCR initialization FAILED", flush=True)
+                    print(f"[CAM2] Error: {str(_e)}", flush=True)
+                    traceback.print_exc()
                     print(f'[CAM2] ❌ attempt {_att+1} failed: {_e}', flush=True)
-                    traceback.print_exc(); self.paddle_reader = None
+                    self.paddle_reader = None
                     if _att == 0 and use_gpu: print('[CAM2] Retrying CPU…', flush=True)
                     else: break
             print('[CAM2] ❌ PaddleOCR all attempts failed', flush=True)
@@ -1330,7 +1341,8 @@ class Camera2OCR:
             old_best = getattr(self, '_appeared_best_path', None)
             if old_best and os.path.exists(old_best) and old_best != path_best:
                 try: os.remove(old_best)
-                except Exception: pass
+                except Exception as e:
+                    print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
             if cv2.imwrite(path_best, frame, [cv2.IMWRITE_JPEG_QUALITY, 98]):
                 self._appeared_best_sharp = sharp
                 self._appeared_best_path  = path_best
@@ -1626,7 +1638,8 @@ class Camera2OCR:
             sd = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "serial_captures")
         try: os.makedirs(sd, exist_ok=True)
-        except Exception: sd = None
+        except Exception as e:
+            print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc(); sd = None
 
         ch, cw = crop.shape[:2]
 
@@ -1635,7 +1648,8 @@ class Camera2OCR:
             try:
                 cv2.imwrite(os.path.join(sd, "last_raw_crop.jpg"),
                             crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            except Exception: pass
+            except Exception as e:
+                print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
 
         # ── sharpness ─────────────────────────────────────────────────
         _gray  = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
@@ -1650,7 +1664,8 @@ class Camera2OCR:
             try:
                 cv2.imwrite(os.path.join(sd, "last_ocr_input.jpg"),
                             ocr_input, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            except Exception: pass
+            except Exception as e:
+                print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
 
         # ── device string ─────────────────────────────────────────────
         _dev_str = 'None'
@@ -1659,7 +1674,8 @@ class Camera2OCR:
                 import torch
                 _dev_str = ('GPU (' + torch.cuda.get_device_name(0) + ')'
                             if torch.cuda.is_available() else 'CPU')
-            except Exception:
+            except Exception as e:
+                print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
                 _dev_str = 'CPU'
 
         print(f"[OCR] Running PaddleOCR", flush=True)
@@ -1702,7 +1718,8 @@ class Camera2OCR:
             try:
                 with open(_lp, "a", encoding="utf-8") as _f:
                     _f.write("\n".join(lines) + "\n")
-            except Exception: pass
+            except Exception as e:
+                print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
 
         if not _PADDLE_OK or self.paddle_reader is None:
             reason = ("not installed" if not _PADDLE_OK else "not loaded yet")
@@ -1711,7 +1728,9 @@ class Camera2OCR:
 
         img_in = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img
         try:
+            print("[CAM2-OCR] Calling PaddleOCR", flush=True)
             result = self.paddle_reader.predict(img_in)
+            print(f"[CAM2-OCR] PaddleOCR Result={result}", flush=True)
         except Exception as e:
             _wlog([f"[{ts}] {iw}×{ih}  EXCEPTION: {e}"])
             print(f"[OCR] PaddleOCR exception: {e}", flush=True)
@@ -2031,6 +2050,7 @@ class Camera2OCR:
                                 (crop.copy(), frame.copy(),
                                  x1, y1, x2, y2, elapsed))
                             print(f"[YOLO] Crop queued : #{self._yolo_det_count}  sharp={_c_sharp:.1f}  q={self._ocr_crop_queue.qsize()}", flush=True)
+                            print(f"[CAM2] Crop queued Queue Size={self._ocr_crop_queue.qsize()}", flush=True)
                     except Exception as e:
                         print(f"[CAM2-YOLO] Queue push error: {e}")
                 elif detected and crop is not None and not self._is_scanning:
@@ -2088,7 +2108,8 @@ class Camera2OCR:
                         try:
                             if hasattr(self._cap,'release'):
                                 self._cap.release()
-                        except Exception: pass
+                        except Exception as e:
+                            print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
                         time.sleep(2.0)
                         self._cap = (self.open_cap_fn(self.url)
                                      if self.open_cap_fn
@@ -2217,29 +2238,39 @@ class Camera2OCR:
         """
         import time as _t
         _frame_count = 0
-        print("[CAM2-OCR] ▶ _ocr_worker thread started", flush=True)
+        print("[CAM2-OCR] ▶ OCR Worker Thread Started", flush=True)
 
         while self.running:
             if not self._ocr_event.wait(timeout=0.05):
                 continue
             # ── queue.get ─────────────────────────────────────────────
             try:
-                crop, frame, x1, y1, x2, y2, elapsed =                     self._ocr_crop_queue.get(timeout=0.5)
+                crop, frame, x1, y1, x2, y2, elapsed = self._ocr_crop_queue.get(timeout=5.0)
+                print(f"[CAM2-OCR] Processing crop Queue Size={self._ocr_crop_queue.qsize()}", flush=True)
             except _queue_mod.Empty:
+                print("[CAM2-OCR] Waiting for crops...", flush=True)
                 continue
 
             # ── gate: already confirmed ───────────────────────────────
             if self.ocr_done:
+                print("[CAM2-OCR] Crop skipped", flush=True)
+                print(f"_is_scanning={self._is_scanning}", flush=True)
+                print(f"ocr_done={self.ocr_done}", flush=True)
+                print(f"paddle_reader={self.paddle_reader}", flush=True)
                 continue
 
             # ── gate: scanning not active ─────────────────────────────
             if not self._is_scanning:
-                print("[CAM2-OCR] gate: _is_scanning=False (call start_ocr first)",
-                      flush=True)
+                print("[CAM2-OCR] gate: _is_scanning=False (call start_ocr first)", flush=True)
+                print("[CAM2-OCR] Crop skipped", flush=True)
+                print(f"_is_scanning={self._is_scanning}", flush=True)
+                print(f"ocr_done={self.ocr_done}", flush=True)
+                print(f"paddle_reader={self.paddle_reader}", flush=True)
                 continue
 
             # ── gate: PaddleOCR ready? ─────────────────────────────────
             if self.paddle_reader is None:
+                print("[CAM2-OCR] ❌ paddle_reader is None", flush=True)
                 if getattr(self, '_paddle_init_failed', False):
                     if not getattr(self, '_paddle_fail_logged', False):
                         print("[CAM2-OCR] ❌ PaddleOCR init FAILED — "
@@ -2250,6 +2281,10 @@ class Camera2OCR:
                       flush=True)
                 self._ocr_crop_queue.put((crop, frame, x1, y1, x2, y2, elapsed))
                 _t.sleep(1.0)
+                print("[CAM2-OCR] Crop skipped", flush=True)
+                print(f"_is_scanning={self._is_scanning}", flush=True)
+                print(f"ocr_done={self.ocr_done}", flush=True)
+                print(f"paddle_reader={self.paddle_reader}", flush=True)
                 continue
 
             # ═══════════════════════════════════════════════════════════
@@ -2346,7 +2381,8 @@ class Camera2OCR:
             with open(os.path.join(folder,"cam2_ocr_audit.txt"),
                       "a",encoding="utf-8") as f:
                 f.write("\n".join(log)+"\n\n")
-        except Exception: pass
+        except Exception as e:
+            print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc()
 
 
 if __name__ == "__main__":
