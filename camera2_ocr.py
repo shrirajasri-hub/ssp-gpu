@@ -751,7 +751,9 @@ class Camera2OCR:
         def _init_paddle():
             import traceback
             print('[CAM2] ⏳ _init_paddle started…', flush=True)
-            if not _PADDLE_OK:
+            try:
+                from paddleocr import PaddleOCR as _PaddleOCR
+            except ImportError:
                 print('[CAM2] ❌ PaddleOCR missing — pip install paddleocr paddlepaddle-gpu', flush=True)
                 self._paddle_init_failed = True; self._paddle_init_done = True; return
             use_gpu = False; gpu_name = 'CPU'
