@@ -978,13 +978,10 @@ def ensure_panel_folder():
     """
     # Between panels: no sequence active and no session open → return None
     # so callers skip rather than creating a premature folder.
-    if (not state.panel_id          # no session open yet (None or 0)
-            and state.current_sequence == 0
-            and not state.seq1_auto_captured
-            and not state.completed.get(1, False)):
-        return state.current_sequence_panel_folder  # None
-
+    # Require an actual SEQ1 snapshot before allocating the panel session.
     if not state.panel_id:
+        if state.current_sequence == 0 or state.seq1_snapshot_data is None:
+            return state.current_sequence_panel_folder
         state.panel_id = datetime.now().strftime("%H%M%S")
 
     if state.current_sequence_panel_folder is None:
@@ -1979,9 +1976,13 @@ def update_seq(new_seq):
             state.landscape_alert_ts = time.time()
             _announce_landscape(2)
         elif new_seq == 3:
-            state.landscape_alert    = "seq3"
-            state.landscape_alert_ts = time.time()
-            _announce_landscape(3)
+            if not state.completed.get(2, False):
+                state.status_msg = "SEQ3 detected — waiting for SEQ2 completion"
+                print("[SEQ3] SEQ3 detected but SEQ2 is not marked completed yet; delaying landscape prompt")
+            else:
+                state.landscape_alert    = "seq3"
+                state.landscape_alert_ts = time.time()
+                _announce_landscape(3)
 
         # ── SAVE final wipe % AND wiping frames for the PREVIOUS sequence ──
         # BEFORE progress/counters reset.  These saved values are the
@@ -2042,7 +2043,12 @@ def update_seq(new_seq):
         state.seq3_wiping_started = False
         state.seq3_consec_wipe_frames = 0   # strict consecutive counter — reset on seq change
         
-        state.status_msg = f"SEQ{new_seq} ACTIVE"
+        if new_seq == 3:
+            state.status_msg = "SEQ3 ACTIVE — capture landscape image"
+        elif new_seq == 2:
+            state.status_msg = "SEQ2 ACTIVE — capture landscape image"
+        else:
+            state.status_msg = f"SEQ{new_seq} ACTIVE"
         if state.seq_start_time.get(new_seq) is None:
             state.seq_start_time[new_seq] = now
         state.current_sequence_panel_name = f"panel_seq{new_seq}"
@@ -2183,18 +2189,6 @@ def update_wiping(hand_present, motion):
                 print(f"[SEQ2] Hand ON panel — wipe frame #{state.seq2_wiping_frames} "
                       f"(panel_name={state.current_panel_name})")
             
-            # ── Trigger CAM2 Audit at Progress Milestones ────────────
-            if camera2_ocr_instance is not None:
-                for m in [20, 50, 90]:
-                    if state.progress >= m and m not in getattr(state, 'audit_milestones', set()):
-                        _mf = ensure_panel_folder()
-                        if _mf and camera2_ocr_instance.panel_folder != _mf:
-                            camera2_ocr_instance.set_panel_folder(_mf)
-                        print(f"[CAM2] Triggering {m}% milestone capture for SEQ{cur}")
-                        camera2_ocr_instance.capture_single_audit_frame(m)
-                        if not hasattr(state, 'audit_milestones'): state.audit_milestones = set()
-                        state.audit_milestones.add(m)
-
             # NOTE: seq2_in_sequence_frames is now incremented in process_frame
             # (after update_seq) so it counts ALL SEQ2 frames, not just wiping ones.
 
@@ -2257,17 +2251,6 @@ def update_wiping(hand_present, motion):
             if state.progress >= 90:
                 print(f"[SEQ3] 90% reached — waiting for panel to fully disappear")
 
-            # ── Trigger CAM2 Audit at Progress Milestones ────────────
-            if camera2_ocr_instance is not None:
-                for m in [20, 50, 90]:
-                    if state.progress >= m and m not in getattr(state, 'audit_milestones', set()):
-                        _mf = ensure_panel_folder()
-                        if _mf and camera2_ocr_instance.panel_folder != _mf:
-                            camera2_ocr_instance.set_panel_folder(_mf)
-                        print(f"[CAM2] Triggering {m}% milestone capture for SEQ{cur}")
-                        camera2_ocr_instance.capture_single_audit_frame(m)
-                        if not hasattr(state, 'audit_milestones'): state.audit_milestones = set()
-                        state.audit_milestones.add(m)
 
     else:
         state.last_wiping_time = None
@@ -2697,17 +2680,20 @@ def process_frame(frame, detections):
 
             # Only commit snapshot when ALL stability checks pass
             if panel_is_stable:
-                state.seq1_snapshot_data = {
-                    'frame':      frame.copy(),
-                    'rect':       current_rect,
-                    'contour':    getattr(state, 'panel_contour', None),
-                    'serial_det': serial_det,
-                }
-                state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
-                # [NEW] Trigger folder creation exactly at snapshot moment
-                ensure_panel_folder()
-                print(f"[SEQ1] ✅ Snapshot taken and Folder Created at frame {state.seq1_detection_count} "
-                      f"— sharpness={frame_sharp:.0f}")
+                if serial_det is None:
+                    print("[SEQ1] Waiting for serial_number class before committing snapshot")
+                else:
+                    state.seq1_snapshot_data = {
+                        'frame':      frame.copy(),
+                        'rect':       current_rect,
+                        'contour':    getattr(state, 'panel_contour', None),
+                        'serial_det': serial_det,
+                    }
+                    state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
+                    # [NEW] Trigger folder creation exactly at snapshot moment
+                    ensure_panel_folder()
+                    print(f"[SEQ1] ✅ Snapshot taken and Folder Created at frame {state.seq1_detection_count} "
+                          f"— sharpness={frame_sharp:.0f}")
     elif not is_panel_seq1:
         # Reset counter when panel is no longer visible
         if state.seq1_detection_count > 0:
@@ -3042,7 +3028,9 @@ def process_frame(frame, detections):
             and not state.seq3_auto_captured
             and not state.all_sequences_done):
 
-        if (_seq3_det is not None
+        if not state.completed.get(2, False):
+            print("[SEQ3] Waiting for SEQ2 to be marked completed in UI before capturing SEQ3")
+        elif (_seq3_det is not None
                 and not hand_present
                 # When current_sequence==3, allow capture even if seq2 still visible
                 # (both panels in frame is normal during the transition period)
@@ -3376,6 +3364,12 @@ def process_frame(frame, detections):
             complete(2)
             if state.seq_start_time.get(3):
                 state.seq_end_time[2] = state.seq_start_time[3]
+            if state.current_sequence == 3 and not state.completed.get(3, False):
+                state.landscape_alert    = "seq3"
+                state.landscape_alert_ts = time.time()
+                state.status_msg = "SEQ3 ACTIVE — capture landscape image"
+                _announce_landscape(3)
+            
         elif s2_pct < 90 and seq3_secs >= 2.0:
             print(f"[SEQ2] 🚫 BLOCKED — wipe progress insufficient "
                   f"(progress={s2_pct}%, need >= 90%)")
