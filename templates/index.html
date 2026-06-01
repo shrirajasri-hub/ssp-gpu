@@ -1993,10 +1993,34 @@
                     return;
                 }
 
-                const camState  = data.state;
-                const serial    = data.serial;
-                const partial   = data.partial;
-                const ocrStatus = data.ocr_status || '';
+                const camState   = data.state;
+                const serial     = data.serial;
+                const partial    = data.partial;
+                const ocrStatus  = data.ocr_status || '';
+                const yoloLoaded = data.yolo_loaded;   // true/false/undefined
+                const serialPt   = data.serial_pt  || '';  // status string from server
+                const framesRead = data.frames_read || 0;
+                const detections = data.detections  || 0;
+
+                // ── serial.pt NOT loaded — show RED warning immediately ──────
+                // This covers: file missing, load failed, still loading.
+                // Takes priority over all other states.
+                if (yoloLoaded === false) {
+                    setCam2ViewportColor('red');
+                    const el = document.getElementById('cam2OcrStatus');
+                    if (el) {
+                        el.textContent = `⚠️ ${serialPt || 'serial.pt not loaded'}`;
+                        el.style.color  = '#ff5252';
+                    }
+                    const hintEl = document.getElementById('serialCam2Hint');
+                    if (hintEl) {
+                        hintEl.textContent = 'OCR disabled — serial.pt problem';
+                        hintEl.style.color  = '#ff5252';
+                    }
+                    // Don't return — still show frames_read as info
+                    // (camera stream is working even if YOLO failed)
+                    return;
+                }
 
                 if (camState === 'captured' && cam2LastState !== 'captured' && cam2LastState !== 'found') {
                     // ✅ GREEN INSTANTLY — frame captured, OCR running in background
@@ -2053,13 +2077,14 @@
 
                     const el = document.getElementById('cam2OcrStatus');
                     if (el) {
-                        // Map raw OCR status strings to friendly display text
+                        // Show detections counter so operator can see YOLO is working
+                        const detStr = detections > 0 ? ` (${detections} crops queued)` : '';
                         const statusMap = {
-                            'Show serial in box':    { text: '📦 Place serial in ROI box',   color: '#4fc3f7' },
-                            'Hold steady':           { text: '✋ Hold steady — reading...',   color: '#ffd740' },
-                            'Capturing...':          { text: '📸 Capturing frame...',          color: '#ffd740' },
-                            'Processing...':         { text: '⚙️ Processing OCR...',           color: '#ffd740' },
-                            'Serial not clear - retry': { text: '⚠️ Not clear — retry',        color: '#ff7043' },
+                            'Show serial in box':    { text: '📦 Place serial in ROI box',       color: '#4fc3f7' },
+                            'Hold steady':           { text: '✋ Hold steady — reading...',       color: '#ffd740' },
+                            'Capturing...':          { text: '📸 Capturing frame...',              color: '#ffd740' },
+                            'Processing...':         { text: `⚙️ Processing OCR...${detStr}`,     color: '#ffd740' },
+                            'Serial not clear - retry': { text: '⚠️ Not clear — retry',          color: '#ff7043' },
                         };
                         const mapped = statusMap[ocrStatus];
                         if (mapped) {
@@ -2068,8 +2093,11 @@
                         } else if (partial && partial.length >= 3) {
                             el.textContent = `📖 Reading: ${partial}...`;
                             el.style.color = '#ffd740';
+                        } else if (detections > 0) {
+                            el.textContent = `🔍 Scanning — ${detections} serial crops found`;
+                            el.style.color = '#00e676';  // green — YOLO is working!
                         } else {
-                            el.textContent = '🔍 Scanning serial number...';
+                            el.textContent = '🔍 Scanning — waiting for serial detection';
                             el.style.color = '#4fc3f7';
                         }
                     }
@@ -2087,10 +2115,24 @@
                     }
 
                 } else if (camState === 'idle') {
-                    setCam2OcrStatus('waiting');
-                    setCam2ViewportColor('');
-                    const hintEl = document.getElementById('serialCam2Hint');
-                    if (hintEl) { hintEl.textContent = 'Waiting...'; hintEl.style.color = '#9e9e9e'; }
+                    // Show serial.pt diagnostic in idle state so operator
+                    // knows the reason OCR isn't running yet.
+                    if (framesRead > 0) {
+                        // Camera is receiving frames — serial.pt loaded OK,
+                        // just waiting for OCR to be triggered by wiping
+                        setCam2OcrStatus('waiting');
+                        setCam2ViewportColor('');
+                        const hintEl = document.getElementById('serialCam2Hint');
+                        if (hintEl) {
+                            hintEl.textContent = `Camera 2 ready (${framesRead} frames received)`;
+                            hintEl.style.color  = '#9e9e9e';
+                        }
+                    } else {
+                        setCam2OcrStatus('waiting');
+                        setCam2ViewportColor('');
+                        const hintEl = document.getElementById('serialCam2Hint');
+                        if (hintEl) { hintEl.textContent = 'Waiting for Camera 2...'; hintEl.style.color = '#9e9e9e'; }
+                    }
                 }
             } catch (e) { /* network errors ignored */ }
         }
@@ -2136,12 +2178,16 @@
             const el = document.getElementById('cam2OcrStatus');
             if (!el) return;
             const map = {
-                waiting:       { text: '🔍 Searching...',                       color: '#4fc3f7' },
-                detecting:     { text: '📸 Capturing...',                        color: '#ffd740' },
-                captured:      { text: '✅ Frame captured — reading serial...',  color: '#00e676' },
-                detected:      { text: `✅ Captured: ${serial || ''}`,           color: '#00e676' },
-                not_connected: { text: '📵 OCR Camera Not Connected',            color: '#ef5350' },
-                failed:        { text: '⚠️ Position panel serial under cam',    color: '#ff7043' },
+                waiting:       { text: '🔍 Searching...',                           color: '#4fc3f7' },
+                detecting:     { text: '📸 Capturing...',                            color: '#ffd740' },
+                captured:      { text: '✅ Frame captured — reading serial...',      color: '#00e676' },
+                detected:      { text: `✅ Captured: ${serial || ''}`,               color: '#00e676' },
+                not_connected: { text: '📵 Camera 2 Not Connected',                  color: '#ef5350' },
+                failed:        { text: '⚠️ Position panel serial under cam',        color: '#ff7043' },
+                not_loaded:    { text: '❌ serial.pt NOT LOADED — check models/',    color: '#ff5252' },
+                pt_missing:    { text: '❌ models/serial.pt MISSING — copy file',    color: '#ff5252' },
+                pt_failed:     { text: '❌ serial.pt load FAILED — see terminal',    color: '#ff5252' },
+                pt_loading:    { text: '⏳ serial.pt loading — wait a moment...',    color: '#ffd740' },
             };
             const entry = map[statusKey] || { text: statusKey, color: '#4fc3f7' };
             el.textContent = entry.text;

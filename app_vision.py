@@ -507,6 +507,7 @@ class PanelDetectionState:
 
         # ── SEQ1 stability counter (direct access in process_frame) ──────────
         self.seq1_detection_count   = 0    # consecutive frames with panel+serial
+        self.seq2_stable_for_seq1   = 0    # consecutive frames SEQ2 active (gates SEQ1 completion)
 
         # ── Attributes set in reset_for_new_panel but missing from __init__ ──
         # All are accessed directly (not via getattr) in process_frame /
@@ -725,6 +726,7 @@ class PanelDetectionState:
         # FIX F1: reset attributes that are set dynamically and not listed above.
         # Without these, fallback captures use OLD panel images after a reset.
         self.seq1_detection_count   = 0    # counter for SEQ1 stability
+        self.seq2_stable_for_seq1   = 0    # consecutive frames SEQ2 active (guards early SEQ1 completion)
         self.last_clean             = None # last hand-free frame (process_frame)
         self.orig                   = None # raw current frame (process_frame)
         self.was_absent_long        = False
@@ -1819,18 +1821,17 @@ def complete(seq):
 
     if seq in (2, 3):
         # Use state.sequence_captured[seq] as the authoritative "image saved" flag.
-        # auto_captured can be True even when no image was saved (spam-prevention
-        # path in fallbacks) — relying on it caused complete() to skip the rescue
-        # even when the folder had no SEQ image at all.
         image_saved = state.sequence_captured.get(seq, False)
         if image_saved:
             print(f"[CAPTURE] SEQ{seq}: ✅ image confirmed saved")
         else:
+            # Priority 1: best tracked landscape frame
             bf = (getattr(state, 'seq2_best_frame', None) if seq == 2
                   else getattr(state, 'seq3_best_frame', None))
             if bf is not None:
                 print(f"[CAPTURE] SEQ{seq}: rescue via complete() — "
-                      f"using landscape tracker best frame")
+                      f"using landscape tracker best frame "
+                      f"(sharp={getattr(state, 'seq2_best_sharp' if seq==2 else 'seq3_best_sharp', 0):.0f})")
                 result = capture(seq, bf,
                                  metadata=(getattr(state, 'seq2_best_meta', None) if seq == 2
                                            else getattr(state, 'seq3_best_meta', None)) or {})
@@ -1838,18 +1839,20 @@ def complete(seq):
                     if seq == 2: state.seq2_auto_captured = True
                     else:        state.seq3_auto_captured = True
             else:
-                # Last resort: use orig_frame or last_clean
-                fb = state.orig_frame if state.orig_frame is not None else getattr(state, 'last_clean', None)
+                # Priority 2: last hand-free clean frame (landscape only)
+                fb = (state.last_clean if state.last_clean is not None
+                      else state.orig_frame if state.orig_frame is not None
+                      else getattr(state, 'last_clean', None))
                 if fb is not None:
                     fh, fw = fb.shape[:2]
-                    if fw > fh:   # landscape only
-                        print(f"[CAPTURE] SEQ{seq}: last-resort orig_frame rescue")
+                    if fw > fh:   # landscape only — STRICT
+                        print(f"[CAPTURE] SEQ{seq}: last-resort rescue with last clean frame ({fw}×{fh})")
                         result = capture(seq, fb)
                         if result:
                             if seq == 2: state.seq2_auto_captured = True
                             else:        state.seq3_auto_captured = True
                     else:
-                        print(f"[CAPTURE] SEQ{seq}: ⚠️ no valid frame for rescue — image skipped")
+                        print(f"[CAPTURE] SEQ{seq}: ⚠️ last clean frame is portrait ({fw}×{fh}) — skipped")
                 else:
                     print(f"[CAPTURE] SEQ{seq}: ⚠️ no frame available — image skipped")
     else:
@@ -1977,6 +1980,34 @@ def update_seq(new_seq):
             print(f'[SEQ2] 💾 Final wipe pct saved = {state.seq2_final_wipe_pct}% '
                   f'wiping_frames saved = {state.seq2_final_wiping_frames} '
                   f'before progress reset for SEQ{new_seq}')
+            # Reset SEQ1-gate stability counter (only used while in SEQ2)
+            state.seq2_stable_for_seq1 = 0
+
+            # ── FORCE CAPTURE SEQ2 image if not already done ──────────────
+            # When SEQ3 appears suddenly (fast operator, strong model detection),
+            # seq2_best_frame may already be populated but capture() not yet called.
+            # Capture it NOW before the transition resets landscape trackers.
+            if not state.seq2_auto_captured:
+                _bf2 = state.seq2_best_frame
+                if _bf2 is not None:
+                    print('[SEQ2] ⚡ Force-capturing SEQ2 at SEQ2→SEQ3 transition '
+                          f'(best_sharp={state.seq2_best_sharp:.0f})')
+                    capture(2, _bf2, metadata=state.seq2_best_meta or {})
+                    state.seq2_auto_captured = True
+                else:
+                    # No landscape frame yet — use last clean hand-free frame
+                    _fb = (state.last_clean if state.last_clean is not None
+                           else state.orig)
+                    if _fb is not None:
+                        fh, fw = _fb.shape[:2]
+                        if fw > fh:   # landscape only
+                            print('[SEQ2] ⚡ Force-capturing SEQ2 using last clean frame')
+                            capture(2, _fb)
+                            state.seq2_auto_captured = True
+                        else:
+                            print('[SEQ2] ⚠️ No landscape frame available for SEQ2 force-capture')
+                    else:
+                        print('[SEQ2] ⚠️ No frame available for SEQ2 force-capture')
         elif prev == 3:
             state.seq3_final_wipe_pct = state.progress
 
@@ -3072,6 +3103,20 @@ def process_frame(frame, detections):
                                              and state.seq3_best_frame is not None)
                                        else 3)
                     if state.seq3_landscape_count >= _fire_threshold:
+                        # ── GUARD: SEQ2 must be captured before SEQ3 fires ──
+                        # If SEQ3 was detected before SEQ2 capture happened
+                        # (fast operator / strong model), save SEQ2 now.
+                        if not state.seq2_auto_captured:
+                            _bf2 = state.seq2_best_frame
+                            if _bf2 is not None:
+                                print('[SEQ3] ⚡ SEQ2 not captured yet — '
+                                      'saving SEQ2 from best tracked landscape frame')
+                                capture(2, _bf2, metadata=state.seq2_best_meta or {})
+                                state.seq2_auto_captured = True
+                            else:
+                                print('[SEQ3] ⚠️ SEQ3 ready but SEQ2 has no landscape frame — '
+                                      'SEQ2 image will be missing in PDF')
+
                         best_f = state.seq3_best_frame
                         if best_f is None and not _wipe_started:
                             # Pre-wipe — use current frame as last resort
@@ -3215,12 +3260,25 @@ def process_frame(frame, detections):
     #   2. SEQ2 detected with high confidence (>= 0.50)
     #   3. Current sequence transitions to SEQ2
     if state.current_sequence == 2 and not state.completed.get(1):
-        s1_pct = getattr(state, 'seq1_final_wipe_pct', 0)
+        s1_pct  = getattr(state, 'seq1_final_wipe_pct', 0)
         s2_conf = getattr(state, 'seq2_detection_confidence', 0)
-        
-        # Both gates must pass: adequate wipe on SEQ1 + strong SEQ2 detection
-        _seq1_ready = (s1_pct >= 80 and s2_conf >= 0.50)
-        
+
+        # Count consecutive frames where SEQ2 is the active sequence.
+        # Prevents premature completion from a single brief SEQ2 detection.
+        state.seq2_stable_for_seq1 = getattr(state, 'seq2_stable_for_seq1', 0) + 1
+
+        # ── STRICTER GATE ────────────────────────────────────────────────
+        # s1_pct >= 85  : SEQ1 properly wiped (was 80 — too easy to trigger)
+        # s2_conf >= 0.65: strong SEQ2 detection (was 0.50 — model flickered)
+        # seq2_stable >= 5: SEQ2 stable for ≥5 frames (~1s at 5fps infer)
+        #                   prevents one-frame false transitions
+        _seq2_stable = getattr(state, 'seq2_stable_for_seq1', 0)
+        _seq1_ready = (s1_pct >= 85 and s2_conf >= 0.65 and _seq2_stable >= 5)
+        if not _seq1_ready and _seq2_stable % 5 == 0:
+            print(f'[SEQ1] ⏳ Waiting: wipe={s1_pct:.0f}% (need 85) '
+                  f'conf={s2_conf:.2f} (need 0.65) '
+                  f'stable={_seq2_stable} (need 5)')
+
         if _seq1_ready:
             # Triggered by SEQ2 activity with proper wiping and confidence.
             # Audit capture (CAM2) started early at Frame 1, so it finishes 
@@ -5142,8 +5200,16 @@ def start_camera():
             # Also try the app root models folder if the script is started
             # from a different working directory.
             _serial_pt_path = os.path.join(SCRIPT_DIR, "models", "serial.pt")
-        print(f'[CAM2-OCR] serial.pt path → {_serial_pt_path}  '
-              f'exists={os.path.exists(_serial_pt_path)}')
+        _pt_exists = os.path.exists(_serial_pt_path)
+        print(f'[CAM2-OCR] serial.pt path  → {_serial_pt_path}')
+        print(f'[CAM2-OCR] serial.pt found → {_pt_exists}')
+        if not _pt_exists:
+            print(f'[CAM2-OCR] ❌ CRITICAL: serial.pt missing — Camera 2 OCR will NOT work')
+            print(f'[CAM2-OCR] ❌ Copy serial.pt to: {os.path.join(SCRIPT_DIR, "models", "serial.pt")}')
+        else:
+            import os as _os
+            sz_mb = round(_os.path.getsize(_serial_pt_path) / (1024*1024), 1)
+            print(f'[CAM2-OCR] ✅ serial.pt exists ({sz_mb} MB) — will load on camera start')
 
         # Open Camera 2 at highest practical resolution so serial digits are large.
         # 2048×1536 gives ~2x more pixels than 1280×960 for the serial region.
@@ -5438,19 +5504,35 @@ def _generate_cam2_frames():
                 yolo_det   = camera2_ocr_instance.get_latest_detection()
                 yolo_ready = camera2_ocr_instance.serial_detector is not None
 
-                # ── HEF-not-loaded warning overlay ────────────────────────
-                # If serial_detector is None (HEF file missing or VDevice
-                # error), draw a persistent red banner so the operator knows
-                # annotations are disabled instead of silently seeing a clean
-                # frame with no explanation.
+                # ── serial.pt status overlay ──────────────────────────────
+                # Draw a prominent red banner when serial.pt is not loaded so
+                # the operator immediately knows annotations are disabled.
                 if not yolo_ready:
                     h_f, w_f = display.shape[:2]
-                    cv2.rectangle(display, (0, h_f - 40), (w_f, h_f),
-                                  (0, 0, 180), -1)
-                    cv2.putText(display, "serial.pt NOT LOADED — no annotation",
-                                (10, h_f - 12),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    # Check whether file exists to give a precise message
+                    _pt_chk = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "models", "serial.pt")
+                    _loading = getattr(camera2_ocr_instance, '_yolo_loading', False)
+                    if _loading:
+                        _msg = "serial.pt LOADING... please wait"
+                        _clr = (0, 140, 255)  # orange
+                    elif not os.path.exists(_pt_chk):
+                        _msg = f"serial.pt MISSING — copy to models/serial.pt"
+                        _clr = (0, 0, 220)    # red
+                    else:
+                        _msg = "serial.pt LOAD FAILED — check terminal for error"
+                        _clr = (0, 0, 200)    # dark red
+                    # Draw 2-line banner at bottom
+                    cv2.rectangle(display, (0, h_f - 60), (w_f, h_f), _clr, -1)
+                    cv2.putText(display, _msg,
+                                (8, h_f - 36),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                                 (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(display, "NO SERIAL ANNOTATION — OCR DISABLED",
+                                (8, h_f - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.50,
+                                (200, 200, 255), 1, cv2.LINE_AA)
 
                 # ── Status text — top-left corner ─────────────────────────
                 if is_done and serial and serial != "Reading...":
@@ -5567,13 +5649,34 @@ def cam2_status():
     else:
         ui_state = 'idle'
 
+    _yolo_loaded  = camera2_ocr_instance.serial_detector is not None
+    _yolo_loading = getattr(camera2_ocr_instance, '_yolo_loading', False)
+    _frames       = getattr(camera2_ocr_instance, '_frame_count', 0)
+    _dets         = getattr(camera2_ocr_instance, '_yolo_det_count', 0)
+
+    # Give the UI a precise serial.pt status string
+    if _yolo_loaded:
+        _pt_status = f"✅ loaded ({camera2_ocr_instance.serial_detector._device})"
+    elif _yolo_loading:
+        _pt_status = "⏳ loading..."
+    else:
+        _pt_chk = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "models", "serial.pt")
+        _pt_status = ("❌ file missing — copy serial.pt to models/" 
+                      if not os.path.exists(_pt_chk) 
+                      else "❌ load failed — check terminal")
+
     return jsonify({
-        'available': True,
-        'state':     ui_state,
-        'serial':    serial,
-        'partial':   partial,
-        'attempts':  attempts,
-        'ocr_status': ocr_status,
+        'available':    True,
+        'state':        ui_state,
+        'serial':       serial,
+        'partial':      partial,
+        'attempts':     attempts,
+        'ocr_status':   ocr_status,
+        'serial_pt':    _pt_status,
+        'yolo_loaded':  _yolo_loaded,
+        'frames_read':  _frames,
+        'detections':   _dets,
     })
 
 
@@ -5728,6 +5831,50 @@ def sequence_status():
              (state.panel_start_time or time.time())), 1)
         if state.panel_start_time else None,
     })
+
+
+@app.route('/api/serial-status', methods=['GET'])
+def serial_status():
+    """
+    Check serial.pt loading and Camera 2 OCR status.
+    Call from browser: GET /api/serial-status
+    Shows exactly why serial.pt may not be loaded.
+    """
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _pt_path    = os.path.join(_script_dir, "models", "serial.pt")
+    pt_exists   = os.path.exists(_pt_path)
+    pt_size_mb  = round(os.path.getsize(_pt_path) / (1024*1024), 1) if pt_exists else 0
+
+    diag = {
+        'serial_pt_path':    _pt_path,
+        'serial_pt_exists':  pt_exists,
+        'serial_pt_size_mb': pt_size_mb,
+        'cam2_instance':     camera2_ocr_instance is not None,
+    }
+
+    if camera2_ocr_instance is not None:
+        diag['yolo_loaded']      = camera2_ocr_instance.serial_detector is not None
+        diag['yolo_loading']     = getattr(camera2_ocr_instance, '_yolo_loading', False)
+        diag['yolo_device']      = (str(getattr(camera2_ocr_instance.serial_detector, '_device', ''))
+                                    if camera2_ocr_instance.serial_detector else None)
+        diag['frames_received']  = getattr(camera2_ocr_instance, '_frame_count', 0)
+        diag['detections_total'] = getattr(camera2_ocr_instance, '_yolo_det_count', 0)
+        diag['ocr_scanning']     = camera2_ocr_instance._is_scanning
+        diag['ocr_done']         = camera2_ocr_instance.ocr_done
+        diag['serial_number']    = camera2_ocr_instance.serial_number
+
+        if not pt_exists:
+            diag['status'] = '❌ SERIAL.PT FILE NOT FOUND — place it in models/ folder'
+        elif not diag['yolo_loaded'] and diag['yolo_loading']:
+            diag['status'] = '⏳ serial.pt loading (wait a few seconds)'
+        elif not diag['yolo_loaded']:
+            diag['status'] = '❌ serial.pt failed to load — check terminal for error'
+        else:
+            diag['status'] = f"✅ serial.pt loaded on {diag['yolo_device']}"
+    else:
+        diag['status'] = '❌ Camera 2 not started — enter Camera 2 URL and start camera'
+
+    return jsonify(diag)
 
 
 @app.route('/api/reset', methods=['POST'])

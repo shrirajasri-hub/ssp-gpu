@@ -681,13 +681,31 @@ class Camera2OCR:
         _pt_path_ref = pt_path
 
         def _init_yolo():
-            """Load PyTorch YOLO model in background"""
+            """Load PyTorch YOLO model in background.
+            Always prints to terminal even on Windows — uses flush=True.
+            """
+            import sys
+            # ── Step 1: Explicit path check before attempting load ─────────────
+            if not _pt_path_ref:
+                print('[CAM2] ❌ serial.pt path is None — OCR disabled', flush=True)
+                self._yolo_loading = False
+                return
+            if not os.path.exists(_pt_path_ref):
+                print(f'[CAM2] ❌ serial.pt NOT FOUND: {_pt_path_ref}', flush=True)
+                print('[CAM2] ❌ → Place serial.pt inside the models/ folder next to app_vision.py', flush=True)
+                self._yolo_loading = False
+                return
+            print(f'[CAM2] 🔄 Loading serial.pt: {_pt_path_ref}', flush=True)
+            # ── Step 2: Load model ─────────────────────────────────────────────
             try:
                 det = SerialYOLODetector(_pt_path_ref)
                 self.serial_detector = det
-                print(f'[CAM2] ✅ Serial: YOLO ({det._device})  {_pt_path_ref}')
+                print(f'[CAM2] ✅ Serial YOLO loaded — device={det._device}', flush=True)
+                print(f'[CAM2] ✅ serial.pt ready — annotations will appear on Camera 2', flush=True)
             except Exception as e:
-                print(f'[CAM2] ⚠️ No serial detector loaded — OCR will be disabled. Error: {e}')
+                print(f'[CAM2] ❌ serial.pt FAILED to load: {e}', flush=True)
+                import traceback; traceback.print_exc()
+                print('[CAM2] ❌ OCR disabled — check ultralytics is installed: pip install ultralytics', flush=True)
             self._yolo_loading = False
 
         def _init_easy():
