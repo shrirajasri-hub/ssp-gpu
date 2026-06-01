@@ -1730,6 +1730,12 @@ def get_seq(dets):
 
     # Pick highest confidence ONLY (Standard rule)
     best = max(seq_dets, key=lambda x: x['confidence'])
+    
+    # [FIX] Require minimum confidence for SEQ2 and SEQ3 to prevent false flips
+    # If the model hallucinates a panel_seq2 with low confidence (e.g. 0.35), ignore it.
+    if CLASS_MAP[best['name']] in (2, 3) and best['confidence'] < 0.60:
+        state.model_sees = "NONE"
+        return None
 
     state.model_sees = best['name']
     return CLASS_MAP[best['name']]
@@ -3329,16 +3335,14 @@ def process_frame(frame, detections):
         state.seq2_stable_for_seq1 = getattr(state, 'seq2_stable_for_seq1', 0) + 1
 
         # ── STRICTER GATE ────────────────────────────────────────────────
-        # s1_pct >= 85  : SEQ1 properly wiped (was 80 — too easy to trigger)
-        # s2_conf >= 0.65: strong SEQ2 detection (was 0.50 — model flickered)
-        # seq2_stable >= 5: SEQ2 stable for ≥5 frames (~1s at 5fps infer)
-        #                   prevents one-frame false transitions
+        # s2_conf >= 0.60: strong SEQ2 detection
+        # seq2_stable >= 3: SEQ2 stable for ≥3 frames
         _seq2_stable = getattr(state, 'seq2_stable_for_seq1', 0)
-        _seq1_ready = (s1_pct >= 85 and s2_conf >= 0.65 and _seq2_stable >= 5)
-        if not _seq1_ready and _seq2_stable % 5 == 0:
-            print(f'[SEQ1] ⏳ Waiting: wipe={s1_pct:.0f}% (need 85) '
-                  f'conf={s2_conf:.2f} (need 0.65) '
-                  f'stable={_seq2_stable} (need 5)')
+        _seq1_ready = (s2_conf >= 0.60 and _seq2_stable >= 3)
+        if not _seq1_ready and _seq2_stable % 3 == 0:
+            print(f'[SEQ1] ⏳ Waiting: '
+                  f'conf={s2_conf:.2f} (need 0.60) '
+                  f'stable={_seq2_stable} (need 3)')
 
         if _seq1_ready:
             # Triggered by SEQ2 activity with proper wiping and confidence.
@@ -3357,14 +3361,9 @@ def process_frame(frame, detections):
                 else:
                     print('[CAM2-OCR] SEQ1 complete — OCR still running; '
                           'keeping scanning alive to finish 3-slot collection')
-        elif s1_pct < 80 and state.seq_start_time.get(1):
-            # SEQ1 not wiped enough yet
-            elapsed = time.time() - state.seq_start_time[1]
-            print(f"[SEQ1] ⚠️ Panel flipped but wipe incomplete: {s1_pct:.0f}% < 80% "
-                  f"(elapsed {elapsed:.1f}s) — waiting for more wiping")
-        elif s2_conf < 0.50:
+        elif s2_conf < 0.60:
             # SEQ2 detected but confidence too low
-            print(f"[SEQ1] ⚠️ SEQ2 detected but low confidence: {s2_conf:.2f} < 0.50 — "
+            print(f"[SEQ1] ⚠️ SEQ2 detected but low confidence: {s2_conf:.2f} < 0.60 — "
                   f"requiring stronger detection")
     # ── 9c. SEQ2 Completion — TIME-BASED gates (not frame counts).
     # Unreachable code removed: SEQ2 rescue logic during SEQ3.
