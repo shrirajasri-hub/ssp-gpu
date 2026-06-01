@@ -518,7 +518,7 @@ class PanelDetectionState:
         self.seq2_stable_count      = 0      # stable-frame counter for SEQ2
         self.seq3_stable_count      = 0      # stable-frame counter for SEQ3
         self.seq2_in_sequence_frames = 0     # total frames spent in SEQ2
-        self.audit_milestones       = set()  # progress milestones already captured
+
         # ── Wipe % captured at the moment of sequence transition (before reset) ──
         # Used by the SEQ1/SEQ2/SEQ3 completion gates to verify adequate wipe happened.
         self.seq1_final_wipe_pct    = 0      # SEQ1 progress% saved before SEQ2 reset
@@ -610,10 +610,7 @@ class PanelDetectionState:
         self.seq3_landscape_count = 0
         self.seq3_miss_count      = 0
         self.seq3_prev_center     = None
-        # FIX 1: clear audit_milestones on every sequence transition so
-        # the 20/50/90% Camera-2 captures fire for EACH of SEQ1/SEQ2/SEQ3.
-        # Without this, milestones captured in SEQ1 block SEQ2 and SEQ3 captures.
-        self.audit_milestones     = set()
+
         # FIX 4: reset seq2_in_sequence_frames on sequence transition so the
         # 20-frame timeout does not fire immediately at SEQ2 start.
         self.seq2_in_sequence_frames = 0
@@ -677,6 +674,8 @@ class PanelDetectionState:
         self.cam2_frame_saved     = False
         self.cam2_image_path      = None
         self.ocr_triggered_by_tilt = False   # reset portrait-tilt OCR flag
+        if _CAM2_OCR_AVAILABLE and camera2_ocr_instance is not None:
+            camera2_ocr_instance.reset_for_new_panel()
         # Reset SEQ3 completion tracking
         self.seq1_wiping_frames   = 0
         self.seq2_wiping_frames   = 0
@@ -730,7 +729,7 @@ class PanelDetectionState:
         self.last_clean             = None # last hand-free frame (process_frame)
         self.orig                   = None # raw current frame (process_frame)
         self.was_absent_long        = False
-        self.audit_milestones       = set()  # clear per-panel progress milestones
+
         self.panel_bbox_xyxy        = None   # FIX 3: reset per-panel panel bbox
         self.panel_id            = None   # DEFERRED — generated when first image captured
         _grabcut_cache.clear()
@@ -1961,31 +1960,17 @@ def update_seq(new_seq):
     if new_seq == state.current_sequence:
         return
 
-    # FIX 5: always clear audit_milestones when transitioning sequences
-    # so Camera-2 milestone captures (20/50/90%) fire fresh for each sequence.
-    state.audit_milestones = set()
 
     # Higher sequence detected → operator moved to next area (only advance one step)
     if new_seq == state.current_sequence + 1:
         prev = state.current_sequence
 
         # ── SEQ3 Transition Guard ─────────────────────────────────
-        # Prevent SEQ3 from becoming active before SEQ2 has been captured.
-        if new_seq == 3 and prev == 2 and not state.seq2_auto_captured:
-            _bf2 = state.seq2_best_frame
-            if _bf2 is not None:
-                print('[SEQ3] ⚡ Holding SEQ3 transition until SEQ2 capture completes')
-                _ok = capture(2, _bf2, metadata=state.seq2_best_meta or {})
-                if _ok:
-                    state.seq2_auto_captured = True
-                    state.seq_capture_data[2] = _bf2
-                    print('[SEQ3] ✅ SEQ2 capture completed before advancing to SEQ3')
-                else:
-                    print('[SEQ3] ⚠️ SEQ2 capture attempt failed — will delay SEQ3 transition')
-            else:
-                print('[SEQ3] ⚠️ Cannot advance to SEQ3: no SEQ2 landscape frame available yet')
-                state.status_msg = 'SEQ2 HOLD — place the panel landscape for capture'
-            if not state.seq2_auto_captured:
+        # STRICT GATING: Prevent SEQ3 from becoming active before SEQ2 is fully wiped and completed.
+        if new_seq == 3 and prev == 2:
+            if not state.completed.get(2, False):
+                print('[SEQ3] ⚠️ Cannot advance to SEQ3: SEQ2 wiping not complete')
+                state.status_msg = 'SEQ2 INCOMPLETE — finish wiping SEQ2 before flipping'
                 return
 
         state.current_sequence = new_seq
@@ -2164,10 +2149,6 @@ def update_wiping(hand_present, motion):
                                   f'{state.seq1_wiping_frames} (no snapshot yet — '
                                   f'serial class may be detected late)')
                             state.ocr_done = False
-                            if not hasattr(state, 'audit_milestones'):
-                                state.audit_milestones = set()
-                            else:
-                                state.audit_milestones.clear()
                 else:
                     folder = ensure_panel_folder()
                     if folder and camera2_ocr_instance is not None:
@@ -2178,30 +2159,8 @@ def update_wiping(hand_present, motion):
                               f'(frame {state.seq1_wiping_frames}, panel+serial confirmed)')
 
                         state.ocr_done = False
-                        if not hasattr(state, 'audit_milestones'):
-                            state.audit_milestones = set()
-                        else:
-                            state.audit_milestones.clear()
 
-            # ── Trigger CAM2 Audit at Progress Milestones ────────────
-            if camera2_ocr_instance is not None:
-                for m in [20, 50, 90]:
-                    if state.progress >= m and m not in getattr(state, 'audit_milestones', set()):
-                        # Ensure cam2 panel_folder matches the current panel folder
-                        # before saving the milestone frame.  If OCR was blocked
-                        # (snapshot guard), panel_folder may still be "." which
-                        # would save the image to the working directory and lose it.
-                        _mf = ensure_panel_folder()
-                        if _mf and camera2_ocr_instance.panel_folder != _mf:
-                            camera2_ocr_instance.set_panel_folder(_mf)
-                        print(f"[CAM2] Triggering {m}% milestone capture for SEQ{cur}")
-                        camera2_ocr_instance.capture_single_audit_frame(m)
-                        if not hasattr(state, 'audit_milestones'): state.audit_milestones = set()
-                        state.audit_milestones.add(m)
-                        # REMOVED: camera2_ocr_instance.ocr_done = True at 90%
-                        # Forcing ocr_done prematurely killed serial detection:
-                        # the OCR worker's _confirm_serial() checked `if self.ocr_done: return`
-                        # and exited without saving the serial number.
+
         elif cur == 2:
             # [FIX] Count SEQ2 wipe frames whenever wiping is confirmed in SEQ2.
             # Previously gated on current_panel_name == "panel_seq2" — but during
@@ -2230,8 +2189,7 @@ def update_wiping(hand_present, motion):
             if state.seq2_wiping_frames >= 6 and state.progress >= 80:
                 print(f"[SEQ2] 6+ wiping frames and 80% progress — ready for completion")
 
-            # [RULE] when wipe reaches 100%, make sure to capture the landscape frame, but do NOT complete SEQ2 here.
-            # SEQ2 completion is strictly gated on the panel being flipped to SEQ3.
+            # [RULE] when wipe reaches 100%, make sure to capture the landscape frame and complete SEQ2.
             if state.progress >= 100 and not state.completed.get(2, False):
                 if not state.seq2_auto_captured:
                     fb = state.seq2_best_frame      # landscape tracked frame ONLY
@@ -2245,7 +2203,9 @@ def update_wiping(hand_present, motion):
                               "waiting for landscape detection")
                 # Save final wipe % so the process_frame gate sees a valid value
                 state.seq2_final_wipe_pct = 100
-                print("[SEQ2] 100% wipe reached — capture processed, waiting for panel flip to complete")
+                print("[SEQ2] 100% wipe reached — marked as COMPLETED")
+                state.completed[2] = True
+                state.sequence_status[2] = 'completed'
         elif cur == 3:
             # [FIX] Count SEQ3 wipe frames when hand is confirmed ON the panel.
             # The old gate (current_panel_name == "panel_seq3") was too strict:
@@ -3082,34 +3042,11 @@ def process_frame(frame, detections):
             and not state.all_sequences_done):
         # Ensure SEQ2 is captured and marked completed before attempting SEQ3 capture.
         if not state.completed.get(2, False):
-            # Try an immediate rescue capture of SEQ2 using the best-tracked
-            # landscape frame if available. This avoids orphaning SEQ2 when
-            # operators move quickly to SEQ3.
-            _bf2 = getattr(state, 'seq2_best_frame', None)
-            if _bf2 is not None and not getattr(state, 'seq2_auto_captured', False):
-                print('[SEQ3] SEQ2 not marked completed — attempting immediate SEQ2 capture (rescue)')
-                _ok = capture(2, _bf2, metadata=getattr(state, 'seq2_best_meta', {}) or {})
-                if _ok:
-                    state.seq2_auto_captured = True
-                    state.seq_capture_data[2] = _bf2
-                    state.completed[2] = True
-                    state.sequence_status[2] = 'completed'
-                    print('[SEQ3] ✅ SEQ2 captured & marked completed — continuing SEQ3 processing')
-                else:
-                    print('[SEQ3] ⚠️ SEQ2 rescue capture failed — prompting operator to place SEQ2')
-                    state.status_msg = 'SEQ2 missing — please place panel landscape to capture SEQ2'
-                    if not getattr(state, '_seq2_cap_announced', False):
-                        _announce_landscape(2)
-                        state._seq2_cap_announced = True
-                    return
-            else:
-                # No SEQ2 best frame available — instruct operator to place SEQ2
-                print('[SEQ3] SEQ2 incomplete and no SEQ2 frame available — prompting operator')
-                state.status_msg = 'SEQ2 missing — please place panel landscape to capture SEQ2'
-                if not getattr(state, '_seq2_cap_announced', False):
-                    _announce_landscape(2)
-                    state._seq2_cap_announced = True
-                return
+            # STRICT GATING: Do not allow SEQ3 capture or bypass SEQ2 wiping.
+            # Operator must complete SEQ2 properly.
+            print('[SEQ3] SEQ2 not marked completed — waiting for operator to finish SEQ2 wiping')
+            state.status_msg = 'SEQ3 detected — please finish wiping SEQ2 first'
+            return
         elif (_seq3_det is not None
                 and not hand_present
                 # When current_sequence==3, allow capture even if seq2 still visible
@@ -3331,14 +3268,12 @@ def process_frame(frame, detections):
                 _finalize_panel()  # SAVE THE OLD PANEL DATA BEFORE RESET
                 reset_panel()
                 state.was_absent_long = False
-        # If panel removed quickly during SEQ3 and no SEQ3 image was captured,
-        # allow a short 2-frame grace before auto-marking SEQ3 completed so the
-        # pipeline can finalize and the next panel can be processed.
+        # When panel is removed during SEQ3, complete it (which triggers PDF generation).
+        # We use a 30-frame absence (~1.2s) to be sure it was actually removed.
         if (state.current_sequence == 3
-                and not getattr(state, 'seq3_auto_captured', False)
                 and not state.completed.get(3, False)
-                and getattr(state, 'panel_absent_frames', 0) >= 2):
-            print('[PIPELINE] Panel removed during SEQ3 with no image captured — auto-completing SEQ3')
+                and getattr(state, 'panel_absent_frames', 0) >= 30):
+            print('[PIPELINE] Panel removed during SEQ3 — marking SEQ3 complete and finalizing')
             complete(3)
     elif conf_seq in (2, 3):
         # The panel has stabilized to a valid non-seq1 state, so any previous absence wasn't a panel swap
@@ -3399,58 +3334,7 @@ def process_frame(frame, detections):
             print(f"[SEQ1] ⚠️ SEQ2 detected but low confidence: {s2_conf:.2f} < 0.50 — "
                   f"requiring stronger detection")
     # ── 9c. SEQ2 Completion — TIME-BASED gates (not frame counts).
-    # At 14fps:  seq2_wiping_frames>=3 = 0.2s, seq3_consec>=10 = 0.7s
-    # → SEQ2 was completing in under 1 second. Frame counts are meaningless
-    # at variable FPS (Pi 3fps vs 14fps).  Use elapsed wall-clock time instead.
-    #
-    # Requirements:
-    #   • SEQ2 active for at least 3.0s  — operator genuinely wiped SEQ2
-    #   • SEQ3 active for at least 2.0s  — real transition, not a detection glitch
-    #   • seq2_wiping_frames >= 3        — hand actually touched SEQ2 (glitch guard)
-    if state.current_sequence == 3 and not state.completed.get(2):
-        # Use the SAVED wiping frame count — the live counter is reset to 0
-        # during update_seq() transition.  seq2_final_wiping_frames is captured
-        # at the moment of SEQ2→SEQ3 transition, before the reset.
-        s2_frames  = getattr(state, 'seq2_final_wiping_frames',
-                             getattr(state, 'seq2_wiping_frames', 0))
-        now_t      = time.time()
-        seq2_secs  = (now_t - state.seq_start_time[2]
-                      if state.seq_start_time.get(2) else 0)
-        seq3_secs  = (now_t - state.seq_start_time[3]
-                      if state.seq_start_time.get(3) else 0)
-        s2_pct     = getattr(state, 'seq2_final_wipe_pct', 0)
-
-        # [RULE] Gated on panel flip AND SEQ2 wiped to at least 90%
-        _seq2_ready = (s2_frames >= 3 and seq2_secs >= 3.0 and seq3_secs >= 2.0 and s2_pct >= 90)
-
-        if _seq2_ready:
-            # ── Wait for Camera-2 slots before closing SEQ2 ──────────────
-            if (_CAM2_OCR_AVAILABLE
-                    and camera2_ocr_instance is not None
-                    and not camera2_ocr_instance.is_done()):
-                _slots_done = all(getattr(camera2_ocr_instance,
-                                          '_slots_saved', [False]*3))
-                if not _slots_done:
-                    # Slots still being collected — wait up to 2s
-                    _t0 = time.time()
-                    while time.time() - _t0 < 2.0:
-                        _slots_done = all(getattr(camera2_ocr_instance,
-                                                  '_slots_saved', [False]*3))
-                        if _slots_done:
-                            print("[SEQ2] ✅ Camera-2 slots confirmed before complete(2)")
-                            break
-                        time.sleep(0.1)
-                    else:
-                        _filled = sum(1 for s in getattr(
-                            camera2_ocr_instance, '_slots_saved', []) if s)
-                        print(f"[SEQ2] ⚠️ Camera-2 slots {_filled}/3 filled "
-                              f"after 2s wait — proceeding with complete(2)")
-
-            print(f"[SEQ2] ✅ Completing — seq2_frames={s2_frames} "
-                  f"seq2_elapsed={seq2_secs:.1f}s seq3_elapsed={seq3_secs:.1f}s")
-            if not state.seq2_auto_captured:
-                print("[WARNING] SEQ2 completed, BUT image was missed!")
-            complete(2)
+    # Unreachable code removed: SEQ2 rescue logic during SEQ3.
             if state.seq_start_time.get(3):
                 state.seq_end_time[2] = state.seq_start_time[3]
             if state.current_sequence == 3 and not state.completed.get(3, False):
