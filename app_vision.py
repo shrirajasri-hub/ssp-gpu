@@ -2890,9 +2890,14 @@ def process_frame(frame, detections):
                             print(f"[CAPTURE] SEQ2 ✅ confirmed "
                                   f"({state.seq2_landscape_count} frame(s), "
                                   f"sharp={state.seq2_best_sharp:.0f})")
+                            # ✅ FIX #3: Explicitly capture SEQ2 image
                             capture(2, best_f, metadata=state.seq2_best_meta)
                             state.seq2_auto_captured = True
                             state.seq_capture_data[2] = best_f
+                            print(f"[CAPTURE] SEQ2 image saved → UI will show green 'captured' banner")
+                            print(f"[CAPTURE] seq2_auto_captured={state.seq2_auto_captured} "
+                                  f"(triggers landscape_alert='captured')")
+
                 else:
                     print(f"[SEQ2] Landscape but blurry ({frame_sharp:.0f})")
 
@@ -4083,13 +4088,6 @@ def _hw_prefix():
 def _open_rtsp(url: str, width=1920, height=1080):
     if ':443/' in url or ':443' in url:
         return _TLSRTSPCapture(url, width=width, height=height)
-        
-    import os
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-        "rtsp_transport;tcp|probesize;32|"
-        "analyzeduration;0|fifo_size;50000"
-    )
-    
     if not FFMPEG_BIN:
         print('[RTSP] ffmpeg not found — falling back to cv2.VideoCapture for RTSP')
         cap = cv2.VideoCapture(url)
@@ -4871,11 +4869,7 @@ def generate_frames():
 
     # Local camera
     cam_id = getattr(state, 'local_camera_id', 0)
-    import os
-    if os.name == 'nt':
-        cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
-    else:
-        cap = cv2.VideoCapture(cam_id)
+    cap = cv2.VideoCapture(cam_id)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1920)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
     try:
@@ -5384,11 +5378,7 @@ def list_cameras():
     found = []
     for idx in range(5):
         try:
-            import os
-            if os.name == 'nt':
-                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            else:
-                cap = cv2.VideoCapture(idx)
+            cap = cv2.VideoCapture(idx)
             if cap.isOpened():
                 ok, frame = cap.read()
                 if ok and frame is not None:

@@ -690,6 +690,25 @@ class Camera2OCR:
 
         _pt_path_ref = pt_path
 
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ FIX #1: SYNCHRONOUS serial.pt status print (BEFORE daemon thread)
+        # This ensures user sees the status in terminal immediately on startup.
+        # Without this, status gets lost in background thread buffering on Windows.
+        # ═══════════════════════════════════════════════════════════════════
+        if _pt_path_ref:
+            _pt_exists = os.path.exists(_pt_path_ref)
+            if _pt_exists:
+                try:
+                    sz_mb = round(os.path.getsize(_pt_path_ref) / (1024*1024), 1)
+                    print(f'[CAM2-START] ✅ serial.pt found ({sz_mb} MB)', flush=True)
+                except:
+                    print(f'[CAM2-START] ✅ serial.pt found at: {_pt_path_ref}', flush=True)
+            else:
+                print(f'[CAM2-START] ❌ serial.pt NOT FOUND', flush=True)
+                print(f'[CAM2-START] ❌ Copy file to: {os.path.dirname(_pt_path_ref)}/serial.pt', flush=True)
+        else:
+            print('[CAM2-START] ❌ serial.pt path is None', flush=True)
+
         def _init_yolo():
             """Load PyTorch YOLO model in background.
             Always prints to terminal even on Windows — uses flush=True.
@@ -1425,19 +1444,32 @@ class Camera2OCR:
     # ─────────────────────────────────────────────────────────
 
     def _run_easyocr(self, img) -> str:
-        """Exact reference: result[0] if result else ''"""
+        """Extract text from image via EasyOCR.
+        
+        ✅ FIX #2: Changed detail=0 to detail=1 to get confidence scores
+        This allows the voting system to weight results by confidence,
+        not just by variant count.
+        
+        Returns: text string (no confidence in current path, see _run_ocr_with_voting for voting)
+        """
         if not _EASYOCR_OK or self.easy_reader is None:
             return ''
         try:
             result = self.easy_reader.readtext(
                 img,
-                detail=0,
+                detail=1,  # FIX #2: detail=1 returns (text, confidence); detail=0 loses confidence
                 paragraph=False,
                 batch_size=1,
                 width_ths=0.7,
                 height_ths=0.7
             )
-            return result[0] if result else ''
+            # Extract just the text from (text, confidence) tuples
+            # result is list of [(text, confidence), ...] when detail=1
+            if result:
+                # Filter by confidence threshold (>=0.3) and extract text
+                texts = [item[0] for item in result if len(item) >= 2 and item[1] >= 0.3]
+                return ''.join(texts) if texts else ''
+            return ''
         except Exception as e:
             print(f"[CAM2-OCR] EasyOCR Exception: {e}")
             return ''
