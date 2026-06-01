@@ -2115,6 +2115,15 @@ def update_wiping(hand_present, motion):
             state.seq1_wiping_frames += 1
 
             # Trigger Camera-2 OCR at frame 3 (not 5) so all 3 capture slots
+
+            # Prompt operator to place panel for SEQ2 landscape capture once
+            # wiping reaches 20% and SEQ2 image hasn't been auto-captured yet.
+            if (state.progress >= 20
+                    and not getattr(state, 'seq2_auto_captured', False)
+                    and not getattr(state, '_seq2_cap_announced', False)):
+                state.status_msg = 'Please place panel landscape to capture SEQ2'
+                _announce_landscape(2)
+                state._seq2_cap_announced = True
             # complete before the operator flips the panel.
             # At 3fps: frame 3 ≈ 1s of wiping. Slots at 0/1/2s need 2s total.
             # Triggering at 3 gives ~3s before a typical 4s flip = all slots fit.
@@ -2755,9 +2764,15 @@ def process_frame(frame, detections):
         # Update current_panel_name from TRACK A (best_any_panel) as fallback so
         # seq2_wiping_frames / seq3_wiping_frames counters are not blocked by a
         # stale class name from the previous sequence.
+        #
+        # Relaxed rule: if TRACK A strongly believes the panel class (confidence>=0.40)
+        # then accept it as the current_panel_name even if it differs from the
+        # expected class. This helps SEQ3 progress/counting during fast transitions
+        # where class-locking may briefly hold back the UI's panel name.
         _bap_name = best_any_panel['name']
+        _bap_conf = best_any_panel.get('confidence', 0.0)
         _expected  = f'panel_seq{state.current_sequence}'
-        if _bap_name == _expected:
+        if _bap_name == _expected or (_bap_name in ('panel_seq2', 'panel_seq3') and _bap_conf >= 0.40):
             state.current_panel_name = _bap_name
     else:
         pass  # panel absent — current_panel_name left as-is for hold-decay logic
@@ -3029,9 +3044,36 @@ def process_frame(frame, detections):
     if (state.current_sequence == 3
             and not state.seq3_auto_captured
             and not state.all_sequences_done):
-
+        # Ensure SEQ2 is captured and marked completed before attempting SEQ3 capture.
         if not state.completed.get(2, False):
-            print("[SEQ3] Waiting for SEQ2 to be marked completed in UI before capturing SEQ3")
+            # Try an immediate rescue capture of SEQ2 using the best-tracked
+            # landscape frame if available. This avoids orphaning SEQ2 when
+            # operators move quickly to SEQ3.
+            _bf2 = getattr(state, 'seq2_best_frame', None)
+            if _bf2 is not None and not getattr(state, 'seq2_auto_captured', False):
+                print('[SEQ3] SEQ2 not marked completed — attempting immediate SEQ2 capture (rescue)')
+                _ok = capture(2, _bf2, metadata=getattr(state, 'seq2_best_meta', {}) or {})
+                if _ok:
+                    state.seq2_auto_captured = True
+                    state.seq_capture_data[2] = _bf2
+                    state.completed[2] = True
+                    state.sequence_status[2] = 'completed'
+                    print('[SEQ3] ✅ SEQ2 captured & marked completed — continuing SEQ3 processing')
+                else:
+                    print('[SEQ3] ⚠️ SEQ2 rescue capture failed — prompting operator to place SEQ2')
+                    state.status_msg = 'SEQ2 missing — please place panel landscape to capture SEQ2'
+                    if not getattr(state, '_seq2_cap_announced', False):
+                        _announce_landscape(2)
+                        state._seq2_cap_announced = True
+                    return
+            else:
+                # No SEQ2 best frame available — instruct operator to place SEQ2
+                print('[SEQ3] SEQ2 incomplete and no SEQ2 frame available — prompting operator')
+                state.status_msg = 'SEQ2 missing — please place panel landscape to capture SEQ2'
+                if not getattr(state, '_seq2_cap_announced', False):
+                    _announce_landscape(2)
+                    state._seq2_cap_announced = True
+                return
         elif (_seq3_det is not None
                 and not hand_present
                 # When current_sequence==3, allow capture even if seq2 still visible
@@ -3253,6 +3295,15 @@ def process_frame(frame, detections):
                 _finalize_panel()  # SAVE THE OLD PANEL DATA BEFORE RESET
                 reset_panel()
                 state.was_absent_long = False
+        # If panel removed quickly during SEQ3 and no SEQ3 image was captured,
+        # allow a short 2-frame grace before auto-marking SEQ3 completed so the
+        # pipeline can finalize and the next panel can be processed.
+        if (state.current_sequence == 3
+                and not getattr(state, 'seq3_auto_captured', False)
+                and not state.completed.get(3, False)
+                and getattr(state, 'panel_absent_frames', 0) >= 2):
+            print('[PIPELINE] Panel removed during SEQ3 with no image captured — auto-completing SEQ3')
+            complete(3)
     elif conf_seq in (2, 3):
         # The panel has stabilized to a valid non-seq1 state, so any previous absence wasn't a panel swap
         state.was_absent_long = False
