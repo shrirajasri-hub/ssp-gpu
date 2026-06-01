@@ -750,14 +750,12 @@ class Camera2OCR:
         self._ocr_crop_queue    = _queue_mod.Queue(maxsize=0)   # unlimited — keep ALL SEQ1 crops
         self._scan_start_ts_ref = [0.0]   # for elapsed calc in YOLO thread
 
-        # ── FIX: Set _yolo_active = True BEFORE threads start ──────────────
-        # serial.pt must run from the first Camera-2 frame so:
-        #   1. UI shows live green bbox immediately (no waiting for start_ocr).
-        #   2. get_latest_detection() is unblocked for SEQ1 snapshot gate.
-        # OCR crop queue is still gated by _is_scanning (set by start_ocr()),
-        # so EasyOCR voting only runs when the operator starts wiping.
-        self._yolo_active = True
-        print("[CAM2] ✅ YOLO always-on pre-activated — will run from first frame")
+        # ── serial.pt remains idle until the first SEQ1 activation.
+        # We do not run YOLO on Camera-2 frames until SEQ1 begins.
+        # This prevents Camera-2 from detecting serial regions before the
+        # panel is actually placed and SEQ1 is active.
+        self._yolo_active = False
+        print("[CAM2] ⏸️ YOLO idle until start_ocr() is called for SEQ1")
 
         # ── Start frame reader first, then YOLO, then OCR worker ────────────
         threading.Thread(target=self._main_loop,         daemon=True).start()
@@ -827,13 +825,13 @@ class Camera2OCR:
             self._latest_det    = None
             self._roi_fallback  = False
 
-        # New panel → activate YOLO detection, drain stale crops
-        self._yolo_active = True
+        # New panel → keep YOLO idle until the next SEQ1 activation.
+        self._yolo_active = False
         while not self._ocr_crop_queue.empty():
             try: self._ocr_crop_queue.get_nowait()
             except: break
         self._scan_start_ts_ref[0] = time.time()
-        print("[CAM2] reset_for_new_panel ✅ — YOLO active, queue cleared")
+        print("[CAM2] reset_for_new_panel ✅ — YOLO idle, queue cleared")
 
     def start_ocr(self):
         with self._lock:

@@ -2691,13 +2691,7 @@ def process_frame(frame, detections):
                     }
                     state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
                     # [NEW] Trigger folder creation exactly at snapshot moment
-                    folder = ensure_panel_folder()
-                    if (_CAM2_OCR_AVAILABLE and camera2_ocr_instance is not None
-                            and folder and not getattr(state, 'ocr_started', False)):
-                        camera2_ocr_instance.set_panel_folder(folder)
-                        camera2_ocr_instance.start_ocr()
-                        state.ocr_started = True
-                        print('[CAM2-OCR] ✅ Started Camera-2 scan at SEQ1 snapshot')
+                    ensure_panel_folder()
                     print(f"[SEQ1] ✅ Snapshot taken and Folder Created at frame {state.seq1_detection_count} "
                           f"— sharpness={frame_sharp:.0f}")
     elif not is_panel_seq1:
@@ -2730,6 +2724,8 @@ def process_frame(frame, detections):
             and not getattr(state, 'ocr_started', False)
             and _CAM2_OCR_AVAILABLE
             and camera2_ocr_instance is not None):
+        # Camera-2 only sees the serial face reliably once SEQ1 is rotated
+        # into portrait. This is the correct moment to start OCR capture.
         folder = ensure_panel_folder()
         if folder:
             camera2_ocr_instance.set_panel_folder(folder)
