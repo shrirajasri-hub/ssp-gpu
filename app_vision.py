@@ -458,6 +458,8 @@ class PanelDetectionState:
         self.landscape_alert_ts     = 0.0   # time alert was set
         self._seq2_cap_announced    = False  # True after "captured" voice played
         self._seq3_cap_announced    = False
+        self._seq2_prompted         = False
+        self._seq3_prompted         = False
 
         # ── Lead time tracking ────────────────────────────────────
         self.panel_start_time     = None          # when panel first detected
@@ -739,6 +741,8 @@ class PanelDetectionState:
         self.landscape_alert_ts  = 0.0
         self._seq2_cap_announced = False
         self._seq3_cap_announced = False
+        self._seq2_prompted      = False
+        self._seq3_prompted      = False
         print(f"🔄 New panel — all sequences reset (reset_id={self.panel_reset_id})")
 
 
@@ -1981,14 +1985,9 @@ def update_seq(new_seq):
             state.landscape_alert    = "seq2"
             state.landscape_alert_ts = time.time()
             _announce_landscape(2)
-        elif new_seq == 3:
             if not state.completed.get(2, False):
                 state.status_msg = "SEQ3 detected — waiting for SEQ2 completion"
                 print("[SEQ3] SEQ3 detected but SEQ2 is not marked completed yet; delaying landscape prompt")
-            else:
-                state.landscape_alert    = "seq3"
-                state.landscape_alert_ts = time.time()
-                _announce_landscape(3)
 
         # ── SAVE final wipe % AND wiping frames for the PREVIOUS sequence ──
         # BEFORE progress/counters reset.  These saved values are the
@@ -2126,11 +2125,25 @@ def update_wiping(hand_present, motion):
             # wiping reaches 20% and SEQ2 image hasn't been auto-captured yet.
             if (state.progress >= 20
                     and not getattr(state, 'seq2_auto_captured', False)
-                    and not getattr(state, '_seq2_cap_announced', False)):
+                    and not getattr(state, '_seq2_prompted', False)):
                 state.status_msg = 'Please place panel landscape to capture SEQ2'
                 _announce_landscape(2)
-                state._seq2_cap_announced = True
-            # complete before the operator flips the panel.
+                state._seq2_prompted = True
+                
+        elif cur == 3:
+            # Prompt operator to place panel for SEQ3 landscape capture once
+            # wiping reaches 50% and SEQ3 image hasn't been auto-captured yet.
+            if (state.progress >= 50
+                    and not getattr(state, 'seq3_auto_captured', False)
+                    and getattr(state, 'completed', {}).get(2, False)
+                    and not getattr(state, '_seq3_prompted', False)):
+                state.status_msg = 'Please place panel landscape to capture SEQ3'
+                state.landscape_alert = "seq3"
+                state.landscape_alert_ts = time.time()
+                _announce_landscape(3)
+                state._seq3_prompted = True
+
+            # Trigger Camera-2 OCR at frame 3 (not 5) so all 3 capture slots
             # At 3fps: frame 3 ≈ 1s of wiping. Slots at 0/1/2s need 2s total.
             # Triggering at 3 gives ~3s before a typical 4s flip = all slots fit.
             if state.seq1_wiping_frames >= 3 and not state.ocr_started:
@@ -2952,7 +2965,7 @@ def process_frame(frame, detections):
         _cross_name = _cross_det.get('name', '')
         _cbx1, _cby1, _cbx2, _cby2 = _cross_det['bbox']
         _cw = max(1, _cbx2 - _cbx1); _ch = max(1, _cby2 - _cby1)
-        _c_landscape  = w > h
+        _c_landscape  = _cw > _ch * 1.1
         _c_big_enough = (_cw * _ch) >= (0.15 * w * h)
 
         if _cross_conf >= 0.55 and _c_landscape and _c_big_enough:
@@ -3204,6 +3217,19 @@ def process_frame(frame, detections):
             print("[CAPTURE] SEQ3 HAND FALLBACK ⚠️ no horizontal frame — "
                   "waiting for landscape detection")
 
+    # ── SEQ3 70% post-wipe hand-absence capture fallback ───────────────
+    if (state.current_sequence == 3
+            and not state.seq3_auto_captured
+            and not state.all_sequences_done
+            and getattr(state, 'progress', 0) >= 70
+            and getattr(state, 'seq3_no_wipe_frames', 0) >= 2):
+        fb = state.seq3_best_frame
+        if fb is not None:
+            print("[CAPTURE] SEQ3 POST-WIPE FALLBACK — >=70% wipe and no hand for 2 frames")
+            capture(3, fb, metadata=getattr(state, 'seq3_best_meta', {}))
+            state.seq3_auto_captured = True
+            state.seq_capture_data[3] = fb
+
     # ── SEQ3 Pi-timeout fallback ──────────────────────────────────────────────
     # STRICT: Only use tracked landscape frame.
     # Use seq3_landscape_count — seq3_stable_count is not incremented anywhere
@@ -3277,8 +3303,9 @@ def process_frame(frame, detections):
         # We use a 30-frame absence (~1.2s) to be sure it was actually removed.
         if (state.current_sequence == 3
                 and not state.completed.get(3, False)
+                and getattr(state, 'progress', 0) >= 70
                 and getattr(state, 'panel_absent_frames', 0) >= 30):
-            print('[PIPELINE] Panel removed during SEQ3 — marking SEQ3 complete and finalizing')
+            print('[PIPELINE] Panel removed during SEQ3 (>=70% wiped) — marking SEQ3 complete and finalizing')
             complete(3)
     elif conf_seq in (2, 3):
         # The panel has stabilized to a valid non-seq1 state, so any previous absence wasn't a panel swap

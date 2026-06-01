@@ -307,22 +307,19 @@ def generate_pdf_report(serial_number, panel_folder, seq_times=None, total_time=
         story.append(Paragraph("Serial Number — Camera 2 Detection", h2_style))
         story.append(Spacer(1, 8))
 
-        # Row 1: ROI annotated (left) + Best full frame (right)
+        # Row 1: Best full frame + Exact Crop
         half_w = (USABLE_W / 2) - 6
         row_imgs, row_labels = [], []
-
-        if _roi_frames and os.path.exists(_roi_frames[0]):
-            row_labels.append(Paragraph("<b>Detection region (YOLO bbox)</b>", sub_style))
-            row_imgs.append(_fit_image(_roi_frames[0], half_w, 3.5*inch))
-            print(f"  [PDF] ROI annotated → {os.path.basename(_roi_frames[0])}")
-        elif _appeared_frames:
-            row_labels.append(Paragraph("<b>Serial class appeared</b>", sub_style))
-            row_imgs.append(_fit_image(_appeared_frames[0], half_w, 3.5*inch))
 
         if _best_full_path and os.path.exists(_best_full_path):
             row_labels.append(Paragraph("<b>Best full frame (sharpest)</b>", sub_style))
             row_imgs.append(_fit_image(_best_full_path, half_w, 3.5*inch))
             print(f"  [PDF] Best full → {os.path.basename(_best_full_path)}")
+
+        if _crop_frames and os.path.exists(_crop_frames[0]):
+            row_labels.append(Paragraph("<b>Crop (exact detection region)</b>", sub_style))
+            row_imgs.append(_fit_image(_crop_frames[0], half_w, 3.5*inch))
+            print(f"  [PDF] Crop → {os.path.basename(_crop_frames[0])}")
 
         if row_imgs:
             while len(row_imgs) < 2:
@@ -331,14 +328,6 @@ def generate_pdf_report(serial_number, panel_folder, seq_times=None, total_time=
             story.append(Table([row_labels, row_imgs],
                                colWidths=[half_w + 6, half_w + 6]))
             story.append(Spacer(1, 14))
-
-        # Row 2: Crop (detection region only)
-        if _crop_frames and os.path.exists(_crop_frames[0]):
-            story.append(Paragraph("Serial Number — Crop (exact detection region)", h2_style))
-            story.append(Spacer(1, 8))
-            story.append(_fit_image(_crop_frames[0], USABLE_W * 0.5, 2.5*inch))
-            story.append(Spacer(1, 14))
-            print(f"  [PDF] Crop → {os.path.basename(_crop_frames[0])}")
 
         story.append(Paragraph(
             f"<b>Confirmed Serial Number:</b>  {serial_number}",

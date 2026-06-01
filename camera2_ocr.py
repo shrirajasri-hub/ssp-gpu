@@ -1463,11 +1463,11 @@ class Camera2OCR:
                 width_ths=0.7,
                 height_ths=0.7
             )
-            # Extract just the text from (text, confidence) tuples
-            # result is list of [(text, confidence), ...] when detail=1
+            # Extract just the text from (bbox, text, confidence) tuples
+            # result is list of [(bbox, text, confidence), ...] when detail=1
             if result:
                 # Filter by confidence threshold (>=0.3) and extract text
-                texts = [item[0] for item in result if len(item) >= 2 and item[1] >= 0.3]
+                texts = [item[1] for item in result if len(item) >= 3 and item[2] >= 0.3]
                 return ''.join(texts) if texts else ''
             return ''
         except Exception as e:
@@ -1641,7 +1641,7 @@ class Camera2OCR:
         print(f"[CAM2-OCR-VOTE] ❌ NO RESULT\n")
         return None
 
-    def _ocr_pipeline(self, crop) -> str:
+    def _ocr_pipeline(self, crop, frame_index=0) -> str:
         """
         Exact reference process_frame() inner loop:
           for name, proc in procs:
@@ -1649,12 +1649,42 @@ class Camera2OCR:
               hit = correct_serial(raw)
               if hit: return hit   # first pipeline match wins
         """
+        import os
+        import cv2
+        import re
+        
+        log_path = None
+        if self.panel_folder and self.panel_folder != ".":
+            sd = os.path.join(self.panel_folder, "serial_captures")
+            os.makedirs(sd, exist_ok=True)
+            log_path = os.path.join(sd, "easyocr_log.txt")
+
         for name, pp_img in self._preprocess_crop(crop):
             raw = self._run_easyocr(pp_img)
+            
+            # Log to text file
+            if log_path:
+                try:
+                    with open(log_path, 'a') as f:
+                        f.write(f"Frame #{frame_index} | Filter: {name:8} | Raw: '{raw}'\n")
+                except: pass
+
+            # Save image if ANY digits detected
+            if raw and re.search(r'\d', raw) and log_path:
+                try:
+                    img_name = f"CAM2_Frame{frame_index}_{name}_Detected.jpg"
+                    cv2.imwrite(os.path.join(os.path.dirname(log_path), img_name), pp_img)
+                except: pass
+
             if raw:
                 hit = _correct_serial(raw)
                 if hit:
                     print(f'[CAM2-OCR] [{name:8}] {repr(raw)} -> {hit}')
+                    if log_path:
+                        try:
+                            with open(log_path, 'a') as f:
+                                f.write(f"  -> Validated Match: {hit}\n")
+                        except: pass
                     return hit
                 print(f'[CAM2-OCR] [{name:8}] {repr(raw)} len={len(raw)} no match')
             else:
@@ -2172,7 +2202,7 @@ class Camera2OCR:
 
             # ── OCR: exact reference process_frame() logic ─────────
             # Run 2DFilter then Otsu; return on first pipeline match.
-            serial = self._ocr_pipeline(crop)
+            serial = self._ocr_pipeline(crop, _frame_count)
             print(f"[CAM2-OCR] Frame #{_frame_count} result → '{serial}'")
 
             # ── POSITION-BASED VOTING (exact reference algorithm) ───────
