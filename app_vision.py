@@ -1892,8 +1892,8 @@ def complete(seq):
                 camera2_ocr_instance.stop_scanning()
                 print('[CAM2-OCR] SEQ1 complete — OCR already done, scanning stopped')
             else:
-                print('[CAM2-OCR] SEQ1 complete — OCR still running; '
-                      'frame saving and scanning kept alive until serial confirmed')
+                camera2_ocr_instance.stop_yolo_only()
+                print('[CAM2-OCR] SEQ1 complete — stopping new Camera-2 detections while background OCR drains captured frames')
 
     if seq == 3:
         print("\n" + "⭐" * 60)
@@ -2691,7 +2691,13 @@ def process_frame(frame, detections):
                     }
                     state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
                     # [NEW] Trigger folder creation exactly at snapshot moment
-                    ensure_panel_folder()
+                    folder = ensure_panel_folder()
+                    if (_CAM2_OCR_AVAILABLE and camera2_ocr_instance is not None
+                            and folder and not getattr(state, 'ocr_started', False)):
+                        camera2_ocr_instance.set_panel_folder(folder)
+                        camera2_ocr_instance.start_ocr()
+                        state.ocr_started = True
+                        print('[CAM2-OCR] ✅ Started Camera-2 scan at SEQ1 snapshot')
                     print(f"[SEQ1] ✅ Snapshot taken and Folder Created at frame {state.seq1_detection_count} "
                           f"— sharpness={frame_sharp:.0f}")
     elif not is_panel_seq1:
