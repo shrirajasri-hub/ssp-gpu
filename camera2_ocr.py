@@ -777,8 +777,7 @@ class Camera2OCR:
                 try:
                     print(f'[CAM2] PaddleOCR loading attempt {_att+1} device={_dev}…', flush=True)
                     self.paddle_reader = _PaddleOCR(
-                        use_textline_orientation=True, lang='en',
-                        enable_mkldnn=False, ocr_version='PP-OCRv5',
+                        use_angle_cls=True, lang='en',
                         device=_dev, show_log=False)
                     print("[CAM2] ✅ PaddleOCR loaded successfully", flush=True)
                     print(f"[CAM2] PaddleOCR object: {self.paddle_reader}", flush=True)
