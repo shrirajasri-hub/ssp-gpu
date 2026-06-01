@@ -4864,7 +4864,11 @@ def generate_frames():
 
     # Local camera
     cam_id = getattr(state, 'local_camera_id', 0)
-    cap = cv2.VideoCapture(cam_id)
+    import os
+    if os.name == 'nt':
+        cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(cam_id)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1920)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
     try:
@@ -5373,7 +5377,11 @@ def list_cameras():
     found = []
     for idx in range(5):
         try:
-            cap = cv2.VideoCapture(idx)
+            import os
+            if os.name == 'nt':
+                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            else:
+                cap = cv2.VideoCapture(idx)
             if cap.isOpened():
                 ok, frame = cap.read()
                 if ok and frame is not None:
