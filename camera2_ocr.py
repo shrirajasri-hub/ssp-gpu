@@ -118,18 +118,19 @@ def _correct_serial(raw: str):
                 _apply_corrections(s[1:-1]))
     return None
 
-# ââ OCR engines â EasyOCR only âââââââââââââââââââââââââââââââââ
+# â”€â”€ OCR engines â€” EasyOCR only â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _TESSERACT_OK = False
 try:
-    pass  # paddleocr imported below
+    from paddleocr import PaddleOCR
     _PADDLE_OK = True
-    print("[CAM2] PaddleOCR available â")
-except ImportError:
+    print("[CAM2] PaddleOCR package imported successfully")
+except Exception as e:
     _PADDLE_OK = False
+    print(f"[CAM2] PaddleOCR import failed: {e}")
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• 
 #  SHARPNESS SCORING
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• 
 
 def sharpness_score(img: np.ndarray) -> float:
     """Laplacian variance â higher = sharper."""
@@ -753,46 +754,26 @@ class Camera2OCR:
         def _init_paddle():
             import traceback
             print("[CAM2] Initializing PaddleOCR...", flush=True)
-            print('[CAM2] ⏳ _init_paddle started…', flush=True)
+            print(f"[CAM2] INIT INSTANCE id(self)={id(self)}", flush=True)
             try:
-                from paddleocr import PaddleOCR as _PaddleOCR
-            except ImportError as e:
-                print("[CAM2] ❌ PaddleOCR initialization FAILED", flush=True)
-                print(f"[CAM2] Error: {str(e)}", flush=True)
-                import traceback; traceback.print_exc()
-                print('[CAM2] ❌ PaddleOCR missing — pip install paddleocr paddlepaddle-gpu', flush=True)
-                self._paddle_init_failed = True; self._paddle_init_done = True; return
-            use_gpu = False; gpu_name = 'CPU'
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.zeros(1, device='cuda:0')
-                    use_gpu = True; gpu_name = torch.cuda.get_device_name(0)
-                    print(f'[CAM2] GPU: {gpu_name}', flush=True)
-                else:
-                    print('[CAM2] No CUDA — PaddleOCR CPU', flush=True)
-            except Exception as _ge:
-                print(f'[CAM2] GPU check: {_ge}', flush=True)
-            for _att, _dev in enumerate(['gpu' if use_gpu else 'cpu', 'cpu']):
-                try:
-                    print(f'[CAM2] PaddleOCR loading attempt {_att+1} device={_dev}…', flush=True)
-                    self.paddle_reader = _PaddleOCR(
-                        use_angle_cls=True, lang='en',
-                        device=_dev, show_log=False)
-                    print("[CAM2] ✅ PaddleOCR loaded successfully", flush=True)
-                    print(f"[CAM2] PaddleOCR object: {self.paddle_reader}", flush=True)
-                    print(f'[CAM2] ✅ PaddleOCR ready  device={_dev}  gpu={gpu_name}', flush=True)
-                    self._paddle_init_done = True; return
-                except Exception as _e:
-                    print("[CAM2] ❌ PaddleOCR initialization FAILED", flush=True)
-                    print(f"[CAM2] Error: {str(_e)}", flush=True)
-                    traceback.print_exc()
-                    print(f'[CAM2] ❌ attempt {_att+1} failed: {_e}', flush=True)
-                    self.paddle_reader = None
-                    if _att == 0 and use_gpu: print('[CAM2] Retrying CPU…', flush=True)
-                    else: break
-            print('[CAM2] ❌ PaddleOCR all attempts failed', flush=True)
-            self._paddle_init_failed = True; self._paddle_init_done = True
+                from paddleocr import PaddleOCR
+                self.paddle_reader = PaddleOCR(
+                    use_textline_orientation=True,
+                    lang='en',
+                    enable_mkldnn=False,
+                    ocr_version="PP-OCRv5",
+                    device="gpu"
+                )
+                print("[CAM2] ✅ PaddleOCR reader created", flush=True)
+                print(f"[CAM2] Reader object={self.paddle_reader}", flush=True)
+                print(f"[CAM2] Reader id={id(self.paddle_reader)}", flush=True)
+                self._paddle_init_done = True
+            except Exception as e:
+                print(f"[CAM2] ❌ PaddleOCR init failed: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                self._paddle_init_failed = True
+                self._paddle_init_done = True
 
 
         threading.Thread(target=_init_yolo, daemon=True).start()
@@ -816,7 +797,7 @@ class Camera2OCR:
         # [FIX] maxsize=10: larger buffer so serial crops are not dropped when
         # EasyOCR preprocessing takes >200 ms on Pi-class CPUs.
         # drop-oldest policy in _yolo_infer_thread prevents stale queue buildup.
-        self._ocr_crop_queue    = _queue_mod.Queue(maxsize=0)   # unlimited â keep ALL SEQ1 crops
+        self._ocr_crop_queue    = _queue_mod.Queue(maxsize=50)   # unlimited â keep ALL SEQ1 crops
         self._scan_start_ts_ref = [0.0]   # for elapsed calc in YOLO thread
 
         # ââ serial.pt remains idle until the first SEQ1 activation.
@@ -1729,7 +1710,15 @@ class Camera2OCR:
         try:
             print("[CAM2-OCR] Calling PaddleOCR", flush=True)
             result = self.paddle_reader.predict(img_in)
-            print(f"[CAM2-OCR] PaddleOCR Result={result}", flush=True)
+            print(f"[CAM2-OCR] Raw OCR Result={result}", flush=True)
+            
+            # Save debug image
+            if self.panel_folder and self.panel_folder != ".":
+                import os
+                cv2.imwrite(
+                    os.path.join(self.panel_folder, "debug_ocr_input.jpg"),
+                    img_in
+                )
         except Exception as e:
             _wlog([f"[{ts}] {iw}×{ih}  EXCEPTION: {e}"])
             print(f"[OCR] PaddleOCR exception: {e}", flush=True)
@@ -2025,31 +2014,21 @@ class Camera2OCR:
                 # voting. Don't wait for 3 slots â process each frame now.
                 if (detected
                         and crop is not None
-                        and self._is_scanning
                         and not self.ocr_done):
+                    
+                    # Auto-start OCR instantly upon YOLO detection
+                    if not self._is_scanning:
+                        print("\n[CAM2] ⚡ Auto-started OCR upon YOLO detection (bypassing start_ocr wait)", flush=True)
+                        self._is_scanning = True
+                        self._scan_start_ts_ref[0] = time.time()
+                        self._ocr_event.set()
+
                     elapsed = time.time() - self._scan_start_ts_ref[0]
                     try:
-                        # Queue is unlimited â keep every crop for OCR voting.
-                        # OCR confirms after 2 matches then skips the rest.
-                        # Sharp crops only: skip blurry to save OCR time.
-                        _c_sharp = float(
-                            __import__('cv2').Laplacian(
-                                __import__('cv2').cvtColor(crop, __import__('cv2').COLOR_BGR2GRAY)
-                                if len(crop.shape) == 3 else crop,
-                                0x06).var())  # CV_64F = 6
-                        # Threshold 5.0 suits engraved metal serials (low Laplacian variance).
-                        # Was 3.0 â raised slightly to skip clearly-blurry motion frames.
-                        _SHARP_MIN = 5.0
-                        if _c_sharp < _SHARP_MIN:
-                            print(f'[CAM2-YOLO] Blurry crop skipped sharp={_c_sharp:.1f} '
-                                  f'(min={_SHARP_MIN}) â waiting for sharper frame')
-                        else:
-                            self._yolo_det_count += 1
-                            self._ocr_crop_queue.put_nowait(
-                                (crop.copy(), frame.copy(),
-                                 x1, y1, x2, y2, elapsed))
-                            print(f"[YOLO] Crop queued : #{self._yolo_det_count}  sharp={_c_sharp:.1f}  q={self._ocr_crop_queue.qsize()}", flush=True)
-                            print(f"[CAM2] Crop queued Queue Size={self._ocr_crop_queue.qsize()}", flush=True)
+                        if self._ocr_crop_queue.full():
+                            self._ocr_crop_queue.get_nowait()
+                        self._ocr_crop_queue.put_nowait((crop.copy(), frame.copy(), x1, y1, x2, y2, elapsed))
+                        print(f"[CAM2] Crop queued Queue={self._ocr_crop_queue.qsize()}", flush=True)
                     except Exception as e:
                         print(f"[CAM2-YOLO] Queue push error: {e}")
                 elif detected and crop is not None and not self._is_scanning:
@@ -2238,6 +2217,14 @@ class Camera2OCR:
         import time as _t
         _frame_count = 0
         print("[CAM2-OCR] ▶ OCR Worker Thread Started", flush=True)
+        print(f"[CAM2-OCR] WORKER INSTANCE id(self)={id(self)}", flush=True)
+
+        while not self._paddle_init_done and self.running:
+            _t.sleep(0.1)
+
+        if self._paddle_init_failed:
+            print("[CAM2-OCR] PaddleOCR init failed", flush=True)
+            return
 
         while self.running:
             if not self._ocr_event.wait(timeout=0.05):
@@ -2245,7 +2232,7 @@ class Camera2OCR:
             # ── queue.get ─────────────────────────────────────────────
             try:
                 crop, frame, x1, y1, x2, y2, elapsed = self._ocr_crop_queue.get(timeout=5.0)
-                print(f"[CAM2-OCR] Processing crop Queue Size={self._ocr_crop_queue.qsize()}", flush=True)
+                print("[CAM2-OCR] Processing crop", flush=True)
             except _queue_mod.Empty:
                 print("[CAM2-OCR] Waiting for crops...", flush=True)
                 continue
@@ -2269,13 +2256,9 @@ class Camera2OCR:
 
             # ── gate: PaddleOCR ready? ─────────────────────────────────
             if self.paddle_reader is None:
-                print("[CAM2-OCR] ❌ paddle_reader is None", flush=True)
-                if getattr(self, '_paddle_init_failed', False):
-                    if not getattr(self, '_paddle_fail_logged', False):
-                        print("[CAM2-OCR] ❌ PaddleOCR init FAILED — "
-                              "check terminal above", flush=True)
-                        self._paddle_fail_logged = True
-                    continue
+                print("[CAM2-OCR] Reader not ready", flush=True)
+                _t.sleep(0.5)
+                continue
                 print("[CAM2-OCR] ⏳ PaddleOCR loading — waiting 1s...",
                       flush=True)
                 self._ocr_crop_queue.put((crop, frame, x1, y1, x2, y2, elapsed))
@@ -2318,6 +2301,7 @@ class Camera2OCR:
                 l = self.letter_votes[letter] if self.letter_confirmed is None else 0
                 CV = 2
 
+                print(f"[CAM2-OCR] Votes={self.day_votes}", flush=True)
                 print(f"[OCR] Vote Day     : '{day}' ({d}/{CV})", flush=True)
                 print(f"[OCR] Vote Code    : '{code}' ({c}/{CV})", flush=True)
                 print(f"[OCR] Vote Letter  : '{letter}' ({l}/{CV})", flush=True)
@@ -2346,7 +2330,7 @@ class Camera2OCR:
                              + self.code_confirmed + self.letter_confirmed)
                     _ocr_time = _t.time() - _t_start
                     print("=" * 64, flush=True)
-                    print(f"[OCR] FINAL SERIAL = {final}", flush=True)
+                    print(f"[CAM2-OCR] SERIAL CONFIRMED={final}", flush=True)
                     print("=" * 64, flush=True)
                     print(f"[OCR] Total OCR Time = {_ocr_time:.3f}s", flush=True)
                     print("", flush=True)
