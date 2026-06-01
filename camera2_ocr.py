@@ -2218,6 +2218,8 @@ class Camera2OCR:
         print("[CAM2-OCR] ▶ _ocr_worker thread started", flush=True)
 
         while self.running:
+            if not self._ocr_event.wait(timeout=0.05):
+                continue
             # ── queue.get ─────────────────────────────────────────────
             try:
                 crop, frame, x1, y1, x2, y2, elapsed =                     self._ocr_crop_queue.get(timeout=0.5)
@@ -2242,8 +2244,10 @@ class Camera2OCR:
                               "check terminal above", flush=True)
                         self._paddle_fail_logged = True
                     continue
-                print("[CAM2-OCR] ⏳ PaddleOCR loading — crop skipped",
+                print("[CAM2-OCR] ⏳ PaddleOCR loading — waiting 1s...",
                       flush=True)
+                self._ocr_crop_queue.put((crop, frame, x1, y1, x2, y2, elapsed))
+                _t.sleep(1.0)
                 continue
 
             # ═══════════════════════════════════════════════════════════
