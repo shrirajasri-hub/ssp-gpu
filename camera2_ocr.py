@@ -1338,8 +1338,16 @@ class Camera2OCR:
             full_path = os.path.join(serial_dir, f"CAM2_Full_Frame_{ts}.jpg")
             cv2.imwrite(full_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 98])
 
-            # ── Exact YOLO crop ────────────────────────────────────────
-            crop_path = os.path.join(serial_dir, f"CAM2_Crop_{ts}.jpg")
+            # ── Exact YOLO crop (Unpadded) ─────────────────────────────
+            x1_exact, y1_exact = self._capture_slots[idx]['x1'], self._capture_slots[idx]['y1']
+            x2_exact, y2_exact = self._capture_slots[idx]['x2'], self._capture_slots[idx]['y2']
+            unpadded_crop = frame[y1_exact:y2_exact, x1_exact:x2_exact].copy()
+            exact_path = os.path.join(serial_dir, f"CAM2_Exact_Crop_{ts}.jpg")
+            if unpadded_crop.size > 0:
+                cv2.imwrite(exact_path, unpadded_crop, [cv2.IMWRITE_JPEG_QUALITY, 98])
+
+            # ── Padded YOLO crop ────────────────────────────────────────
+            crop_path = os.path.join(serial_dir, f"CAM2_Padded_Crop_{ts}.jpg")
             cv2.imwrite(crop_path, crop, [cv2.IMWRITE_JPEG_QUALITY, 98])
 
             # ── Best full frame (slot 1 is initial best) ──────────────
@@ -1358,8 +1366,15 @@ class Camera2OCR:
             print(f"       Best full     : CAM2_Best_Full.jpg")
 
         else:
-            # ── Slot 2: extra crop for voting diversity ────────────────
-            crop2_path = os.path.join(serial_dir, f"CAM2_Crop_2_{ts}.jpg")
+            # ── Slot 2: extra crops for voting diversity ────────────────
+            x1_exact, y1_exact = self._capture_slots[idx]['x1'], self._capture_slots[idx]['y1']
+            x2_exact, y2_exact = self._capture_slots[idx]['x2'], self._capture_slots[idx]['y2']
+            unpadded_crop2 = frame[y1_exact:y2_exact, x1_exact:x2_exact].copy()
+            exact2_path = os.path.join(serial_dir, f"CAM2_Exact_Crop_2_{ts}.jpg")
+            if unpadded_crop2.size > 0:
+                cv2.imwrite(exact2_path, unpadded_crop2, [cv2.IMWRITE_JPEG_QUALITY, 98])
+
+            crop2_path = os.path.join(serial_dir, f"CAM2_Padded_Crop_2_{ts}.jpg")
             cv2.imwrite(crop2_path, crop, [cv2.IMWRITE_JPEG_QUALITY, 98])
 
             # ── Update Best_Full if this slot is sharper ──────────────
@@ -1651,27 +1666,6 @@ class Camera2OCR:
         sharp = cv2.filter2D(grey, -1, k2)
         _, otsu = cv2.threshold(sharp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         variants.append(("Otsu", otsu))
-
-        blur1 = cv2.GaussianBlur(grey, (3, 3), 0)
-        blur2 = cv2.GaussianBlur(grey, (9, 9), 0)
-        dog = cv2.subtract(blur1, blur2)
-        dog = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX)
-        _, dog_thresh = cv2.threshold(dog, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        variants.append(("DoG", dog_thresh))
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        mg = cv2.morphologyEx(grey, cv2.MORPH_GRADIENT, kernel)
-        mg = cv2.bitwise_not(mg)
-        variants.append(("MG", mg))
-
-        variants.append(("Original", grey))
-
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        clahe_img = clahe.apply(grey)
-        variants.append(("CLAHE", clahe_img))
-
-        adapt = cv2.adaptiveThreshold(clahe_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 4)
-        variants.append(("Adaptive", adapt))
 
         if sd:
             try:
