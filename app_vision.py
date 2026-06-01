@@ -4083,6 +4083,13 @@ def _hw_prefix():
 def _open_rtsp(url: str, width=1920, height=1080):
     if ':443/' in url or ':443' in url:
         return _TLSRTSPCapture(url, width=width, height=height)
+        
+    import os
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+        "rtsp_transport;tcp|probesize;32|"
+        "analyzeduration;0|fifo_size;50000"
+    )
+    
     if not FFMPEG_BIN:
         print('[RTSP] ffmpeg not found — falling back to cv2.VideoCapture for RTSP')
         cap = cv2.VideoCapture(url)
