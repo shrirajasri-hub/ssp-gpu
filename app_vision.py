@@ -2703,6 +2703,24 @@ def process_frame(frame, detections):
                     ensure_panel_folder()
                     print(f"[SEQ1] ✅ Snapshot taken and Folder Created at frame {state.seq1_detection_count} "
                           f"— sharpness={frame_sharp:.0f}")
+
+        # EARLY FOLDER CREATION: sometimes serial_number appears together with
+        # panel_seq1 on the same frames. To avoid delaying Camera-2 folder
+        # allocation until a perfect stable snapshot, create the panel folder
+        # as soon as SEQ1 is stable for 2 frames and a serial detection exists.
+        # This ensures Camera-2 can start saving audit/capture frames immediately
+        # even if the full SEQ1 snapshot is deferred for sharpness checks.
+        if (state.seq1_detection_count >= 2
+                and serial_det is not None
+                and not state.panel_id):
+            try:
+                state.panel_id = datetime.now().strftime("%H%M%S")
+                state.current_sequence_panel_folder = get_panel_folder(state.serial_number or 'SSP-SEQ', state.panel_id)
+                print(f"[SEQ1] Early panel folder created: {state.current_sequence_panel_folder}")
+                if _CAM2_OCR_AVAILABLE and camera2_ocr_instance is not None:
+                    camera2_ocr_instance.set_panel_folder(state.current_sequence_panel_folder)
+            except Exception as e:
+                print(f"[SEQ1] Early folder creation failed: {e}")
     elif not is_panel_seq1:
         # Reset counter when panel is no longer visible
         if state.seq1_detection_count > 0:
