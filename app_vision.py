@@ -4100,6 +4100,12 @@ def _hw_prefix():
 def _open_rtsp(url: str, width=1920, height=1080):
     if ':443/' in url or ':443' in url:
         return _TLSRTSPCapture(url, width=width, height=height)
+    if not FFMPEG_BIN:
+        print('[RTSP] ffmpeg not found — falling back to cv2.VideoCapture for RTSP')
+        cap = cv2.VideoCapture(url)
+        if cap is not None and cap.isOpened():
+            return cap
+        print('[RTSP] cv2.VideoCapture fallback failed — ensure OpenCV supports RTSP or install ffmpeg')
     return FFmpegVideoCapture(url, width=width, height=height)
 
 
