@@ -1950,10 +1950,26 @@ def update_seq(new_seq):
     # Higher sequence detected → operator moved to next area (only advance one step)
     if new_seq == state.current_sequence + 1:
         prev = state.current_sequence
-        
-        # [RULE] Sequence transitions: 
-        # Lead times are now captured based on ACTUAL activity transitions 
-        # handled in process_frame (e.g., SEQ2 only completes when SEQ3 wiping starts).
+
+        # ── SEQ3 Transition Guard ─────────────────────────────────
+        # Prevent SEQ3 from becoming active before SEQ2 has been captured.
+        if new_seq == 3 and prev == 2 and not state.seq2_auto_captured:
+            _bf2 = state.seq2_best_frame
+            if _bf2 is not None:
+                print('[SEQ3] ⚡ Holding SEQ3 transition until SEQ2 capture completes')
+                _ok = capture(2, _bf2, metadata=state.seq2_best_meta or {})
+                if _ok:
+                    state.seq2_auto_captured = True
+                    state.seq_capture_data[2] = _bf2
+                    print('[SEQ3] ✅ SEQ2 capture completed before advancing to SEQ3')
+                else:
+                    print('[SEQ3] ⚠️ SEQ2 capture attempt failed — will delay SEQ3 transition')
+            else:
+                print('[SEQ3] ⚠️ Cannot advance to SEQ3: no SEQ2 landscape frame available yet')
+                state.status_msg = 'SEQ2 HOLD — place the panel landscape for capture'
+            if not state.seq2_auto_captured:
+                return
+
         state.current_sequence = new_seq
         state.sequence_status[new_seq] = "active"
 
