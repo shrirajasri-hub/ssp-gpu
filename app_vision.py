@@ -3340,9 +3340,12 @@ def process_frame(frame, detections):
         # s2_conf >= 0.60: strong SEQ2 detection
         # seq2_stable >= 3: SEQ2 stable for ≥3 frames
         _seq2_stable = getattr(state, 'seq2_stable_for_seq1', 0)
-        _seq1_ready = (s2_conf >= 0.60 and _seq2_stable >= 3)
+        # ✅ FIX: also require s1_pct >= 80 — comment above said "80% coverage"
+        # but the gate never checked it, so SEQ1 could complete after minimal wiping.
+        _seq1_ready = (s1_pct >= 80 and s2_conf >= 0.60 and _seq2_stable >= 3)
         if not _seq1_ready and _seq2_stable % 3 == 0:
             print(f'[SEQ1] ⏳ Waiting: '
+                  f'wipe={s1_pct:.0f}% (need 80) '
                   f'conf={s2_conf:.2f} (need 0.60) '
                   f'stable={_seq2_stable} (need 3)')
 
