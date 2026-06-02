@@ -742,7 +742,7 @@ class Camera2OCR:
                 print('[CAM2] â OCR disabled â check ultralytics is installed: pip install ultralytics', flush=True)
             self._yolo_loading = False
 
-        # PaddleOCR init flags — worker polls these while waiting
+        # PaddleOCR init flags
         self._paddle_init_done   = False
         self._paddle_init_failed = False
 
@@ -761,9 +761,9 @@ class Camera2OCR:
                 )
                 print("[CAM2] ✅ PaddleOCR reader created", flush=True)
                 print(f"[CAM2] Reader object={self.paddle_reader}", flush=True)
+                print(f"[CAM2] Reader id={id(self.paddle_reader)}", flush=True)
                 self._paddle_init_done = True
-                # Wake OCR worker — queue may have crops waiting from the load window
-                self._ocr_event.set()
+                self._ocr_event.set()   # wake worker
                 print("[CAM2] ✅ _ocr_event set — worker will drain queued crops",
                       flush=True)
             except Exception as e:
@@ -1660,11 +1660,7 @@ class Camera2OCR:
         print(f"[OCR] Device       : {_dev_str}", flush=True)
 
         # ── PaddleOCR predict ─────────────────────────────────────────
-        print(f"[CAM2-OCR] Processing crop  {cw}×{ch} → {cw*2}×{ch*2}",
-              flush=True)
-        print("[CAM2-OCR] Calling PaddleOCR", flush=True)
         raw_text, max_score = self._run_paddle_ocr(ocr_input, sd)
-        print(f"[CAM2-OCR] Raw OCR Result  = {repr(raw_text)}", flush=True)
 
         if raw_text:
             print(f"[OCR] Candidate    : '{raw_text}'", flush=True)
@@ -1680,10 +1676,8 @@ class Camera2OCR:
         hit = _correct_serial(raw_text)
         if hit:
             print(f"[OCR] Corrected    : {hit}", flush=True)
-            print(f"[CAM2-OCR] Corrected Serial = {hit}", flush=True)
         else:
             print(f"[OCR] Corrected    : INVALID — '{raw_text}' rejected", flush=True)
-            print(f"[CAM2-OCR] Corrected Serial = INVALID", flush=True)
 
         _elapsed = _time_mod.time() - _t0
         _write_pred_log(sd, hit, raw_text, max_score, None, _elapsed)
@@ -1911,7 +1905,6 @@ class Camera2OCR:
 
         print("━" * 64, flush=True)
         print(f"[CAM2] ✅ Serial CONFIRMED → {serial}", flush=True)
-        print(f"[CAM2-OCR] SERIAL CONFIRMED = {serial}", flush=True)
         print(f"[CAM2]    ocr_done=True  is_scanning=False", flush=True)
         print(f"[CAM2]    UI will show serial on next /api/cam2_status poll", flush=True)
         print("━" * 64, flush=True)
@@ -2021,21 +2014,18 @@ class Camera2OCR:
                         and crop is not None
                         and not self.ocr_done):
                     
-                    # ── AUTO-TRIGGER: Camera2 serial.pt IS the start signal ──
                     if not self._is_scanning:
                         _conf = (self._latest_det[4]
                                  if self._latest_det is not None else 0.0)
-                        print("", flush=True)
                         print("[CAM2-OCR] 🚀 STARTING OCR FROM CAMERA2 SERIAL DETECTION",
                               flush=True)
                         print(f"[CAM2-OCR]    confidence : {_conf:.3f}", flush=True)
                         print(f"[CAM2-OCR]    folder     : {self.panel_folder}",
                               flush=True)
-                        # full reset: votes, ocr_done, _yolo_active, event cleared
                         self.start_ocr()
                         print(f"[CAM2-OCR]    _is_scanning={self._is_scanning}",
                               flush=True)
-                        self._ocr_event.set()   # wake worker
+                        self._ocr_event.set()
 
                     elapsed = time.time() - self._scan_start_ts_ref[0]
                     try:
@@ -2224,100 +2214,106 @@ class Camera2OCR:
     def _ocr_worker(self):
         """
         Background OCR worker thread.
-        Prints structured pipeline log matching the example format:
-          [OCR] START OCR PROCESS
-          [YOLO] ...
-          [OCR] Crop / Sharpness / Running PaddleOCR / ...
-          [OCR] FINAL SERIAL / Total OCR Time
+
+        ✅ FIX: removed _ocr_event.wait() — was blocking queue consumption.
+        ✅ FIX: check paddle_reader BEFORE queue.get() so no crop is ever lost.
+        ✅ FIX: progress logs during PaddleOCR init-wait.
+        Direct queue.get(timeout=1) — no event dependency.
         """
         import time as _t
         _frame_count = 0
-        print("[CAM2-OCR] ▶ OCR Worker Thread Started", flush=True)
+
+        print("[CAM2-OCR] OCR Worker Thread Started", flush=True)
         print(f"[CAM2-OCR] WORKER INSTANCE id(self)={id(self)}", flush=True)
 
-        # ── WAIT FOR PADDLEOCR TO FINISH LOADING ──────────────────────
-        # Print progress every 3s so user can see it's still initializing.
-        # Once done, process all crops in the queue immediately.
-        print("[CAM2-OCR] Waiting for PaddleOCR to initialize…", flush=True)
-        _wait_start = _t.time()
-        _last_print  = _wait_start
+        # ── WAIT FOR PADDLEOCR — with visible progress ───────────────────
+        _t0 = _t.time()
+        _last_log = _t0
         while not self._paddle_init_done and self.running:
             _t.sleep(0.1)
-            if _t.time() - _last_print >= 3.0:
-                _elapsed_w = _t.time() - _wait_start
-                print(f"[CAM2-OCR] ⏳ PaddleOCR still loading… "
-                      f"{_elapsed_w:.0f}s  "
-                      f"queue={self._ocr_crop_queue.qsize()}", flush=True)
-                _last_print = _t.time()
+            now = _t.time()
+            if now - _last_log >= 3.0:
+                print(f"[CAM2-OCR] ⏳ Waiting for PaddleOCR "
+                      f"{now-_t0:.0f}s  queue={self._ocr_crop_queue.qsize()}",
+                      flush=True)
+                _last_log = now
 
-        if self._paddle_init_failed:
-            print("[CAM2-OCR] ❌ PaddleOCR init FAILED — OCR disabled", flush=True)
+        if not self.running:
             return
 
-        if self.paddle_reader is None:
-            print("[CAM2-OCR] ❌ paddle_reader is None after init — OCR disabled",
-                  flush=True)
+        if self._paddle_init_failed or self.paddle_reader is None:
+            print("[CAM2-OCR] ❌ PaddleOCR FAILED — worker exits", flush=True)
             return
 
-        _init_elapsed = _t.time() - _wait_start
-        print(f"[CAM2-OCR] ✅ PaddleOCR ready in {_init_elapsed:.1f}s  "
-              f"queue={self._ocr_crop_queue.qsize()} crops waiting",
-              flush=True)
-        # Wake worker for any crops that arrived during loading
-        self._ocr_event.set()
+        print(f"[CAM2-OCR] ✅ PaddleOCR ready in {_t.time()-_t0:.1f}s  "
+              f"queue={self._ocr_crop_queue.qsize()} crops waiting", flush=True)
 
+        # ── MAIN LOOP — direct queue poll, no _ocr_event dependency ─────
         while self.running:
-            if not self._ocr_event.wait(timeout=0.05):
+
+            # ── 1. SKIP if nothing to do ─────────────────────────────────
+            if self.ocr_done:
+                _t.sleep(0.1)
                 continue
 
-            # ── queue.get ─────────────────────────────────────────────
+            # ── 2. WAIT FOR SCANNING TO START ────────────────────────────
+            if not self._is_scanning:
+                print("[CAM2-OCR] Waiting for OCR event (_is_scanning=False)",
+                      flush=True)
+                _t.sleep(0.2)
+                continue
+
+            # ── 3. GET CROP FROM QUEUE ────────────────────────────────────
             try:
-                crop, frame, x1, y1, x2, y2, elapsed =                     self._ocr_crop_queue.get(timeout=1.0)
+                crop, frame, x1, y1, x2, y2, elapsed =                     self._ocr_crop_queue.get(timeout=1)
             except _queue_mod.Empty:
                 continue
 
-            # ── gate: already confirmed ───────────────────────────────
-            if self.ocr_done:
+            print(f"[CAM2-OCR] OCR event received", flush=True)
+            print(f"[CAM2-OCR] Queue item received. "
+                  f"Remaining={self._ocr_crop_queue.qsize()}", flush=True)
+
+            # ── 4. GATE: confirmed or stopped ────────────────────────────
+            if self.ocr_done or not self._is_scanning:
                 continue
 
-            # ── gate: scanning not active ─────────────────────────────
-            if not self._is_scanning:
-                print("[CAM2-OCR] gate: _is_scanning=False", flush=True)
-                continue
-
-            # ═══════════════════════════════════════════════════════════
+            # ── 5. RUN OCR ───────────────────────────────────────────────
             _frame_count += 1
             _t_start = _t.time()
-            ch, cw   = crop.shape[:2]
+            ch, cw = crop.shape[:2]
 
             print("", flush=True)
             print("=" * 64, flush=True)
             print("[OCR] START OCR PROCESS", flush=True)
             print("=" * 64, flush=True)
             print(f"[OCR] Frame        : #{_frame_count}", flush=True)
-            print(f"[OCR] Elapsed      : {elapsed:.2f}s since scan start", flush=True)
-            print(f"[OCR] Scan folder  : {self.panel_folder}", flush=True)
+            print(f"[OCR] Elapsed      : {elapsed:.2f}s since scan start",
+                  flush=True)
+            print(f"[CAM2-OCR] Processing crop  {cw}×{ch} → {cw*2}×{ch*2}",
+                  flush=True)
+            print("[CAM2-OCR] Calling PaddleOCR", flush=True)
 
-            # ── run pipeline (logs Crop / Sharpness / PaddleOCR / etc.) ─
             serial = self._ocr_pipeline(crop)
 
-            # ── voting ────────────────────────────────────────────────
+            print(f"[CAM2-OCR] PaddleOCR returned  raw={repr(serial)}",
+                  flush=True)
+
+            # ── 6. VOTING ─────────────────────────────────────────────────
             if serial:
                 self.partial_serial = serial
                 day    = serial[0:2]
                 code   = serial[6:9]
                 letter = serial[9]
 
-                if self.day_confirmed    is None: self.day_votes[day]       += 1
-                if self.code_confirmed   is None: self.code_votes[code]     += 1
+                if self.day_confirmed    is None: self.day_votes[day]    += 1
+                if self.code_confirmed   is None: self.code_votes[code]  += 1
                 if self.letter_confirmed is None: self.letter_votes[letter] += 1
 
-                d = self.day_votes[day]       if self.day_confirmed    is None else 0
-                c = self.code_votes[code]     if self.code_confirmed   is None else 0
+                d = self.day_votes[day]    if self.day_confirmed    is None else 0
+                c = self.code_votes[code]  if self.code_confirmed   is None else 0
                 l = self.letter_votes[letter] if self.letter_confirmed is None else 0
                 CV = 2
 
-                print(f"[CAM2-OCR] Votes={self.day_votes}", flush=True)
                 print(f"[OCR] Vote Day     : '{day}' ({d}/{CV})", flush=True)
                 print(f"[OCR] Vote Code    : '{code}' ({c}/{CV})", flush=True)
                 print(f"[OCR] Vote Letter  : '{letter}' ({l}/{CV})", flush=True)
@@ -2336,30 +2332,29 @@ class Camera2OCR:
                                f"Code:{self.code_confirmed or code}  "
                                f"Letter:{self.letter_confirmed or letter}")
 
-                if (self.day_confirmed is not None
+                if (self.day_confirmed    is not None
                         and self.code_confirmed   is not None
                         and self.letter_confirmed is not None):
                     from datetime import datetime as _dtc
-                    _n    = _dtc.now()
+                    _n = _dtc.now()
                     final = (self.day_confirmed
                              + f"{_n.month:02d}{_n.year%100:02d}"
                              + self.code_confirmed + self.letter_confirmed)
                     _ocr_time = _t.time() - _t_start
                     print("=" * 64, flush=True)
-                    print(f"[CAM2-OCR] SERIAL CONFIRMED={final}", flush=True)
+                    print(f"[CAM2-OCR] SERIAL CONFIRMED = {final}", flush=True)
                     print("=" * 64, flush=True)
                     print(f"[OCR] Total OCR Time = {_ocr_time:.3f}s", flush=True)
-                    print("", flush=True)
                     self._confirm_serial(final)
                     continue
             else:
-                print(f"[OCR] No valid serial this frame", flush=True)
+                print("[OCR] No valid serial this frame", flush=True)
 
             _ocr_time = _t.time() - _t_start
             print(f"[OCR] Frame time   : {_ocr_time:.3f}s", flush=True)
             print("=" * 64, flush=True)
 
-            # ── fill PDF slots ─────────────────────────────────────────
+            # ── fill PDF slots ────────────────────────────────────────────
             if not self._all_slots_filled():
                 try:
                     self._try_fill_slot(frame, crop, x1, y1, x2, y2, elapsed)
