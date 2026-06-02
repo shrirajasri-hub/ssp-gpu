@@ -2738,28 +2738,27 @@ def process_frame(frame, detections):
 
     if (_panel_is_portrait
             and state.current_sequence == 1
-            and state.seq1_snapshot_data is not None
             and not getattr(state, 'ocr_started', False)
             and _CAM2_OCR_AVAILABLE
             and camera2_ocr_instance is not None):
-        # Camera-2 only sees the serial face reliably once SEQ1 is rotated
-        # into portrait. This is the correct moment to start OCR capture.
+        # ✅ FIX: removed seq1_snapshot_data dependency.
+        # best.pt has no serial_number class → serial_det always None
+        # → snapshot gate always blocked → OCR never started.
+        # Portrait + SEQ1 is sufficient. Camera2 serial.pt handles detection.
         folder = ensure_panel_folder()
         if folder:
             camera2_ocr_instance.set_panel_folder(folder)
             camera2_ocr_instance.start_ocr()
             state.ocr_started = True
-            print('[CAM2-OCR] 🔄 OCR TRIGGERED by PORTRAIT TILT')
-            print(f'[CAM2-OCR]    Serial now pointing at Camera-2')
-            print(f'[CAM2-OCR]    Panel folder: {folder}')
-            print(f'[CAM2-OCR]    YOLO ready: {camera2_ocr_instance.serial_detector is not None}')
-    elif _panel_is_portrait and state.seq1_snapshot_data is not None:
-        print(f'[CAM2-OCR] Portrait detected but OCR start conditions not met:')
-        print(f'           seq == 1: {state.current_sequence == 1}')
-        print(f'           snapshot_data: {state.seq1_snapshot_data is not None}')
-        print(f'           ocr_started: {getattr(state, "ocr_started", False)}')
-        print(f'           CAM2_AVAILABLE: {_CAM2_OCR_AVAILABLE}')
-        print(f'           camera2_instance: {camera2_ocr_instance is not None}')
+            print('[CAM2-OCR] 🔄 OCR TRIGGERED by PORTRAIT TILT', flush=True)
+            print(f'[CAM2-OCR]    Panel folder: {folder}', flush=True)
+            print(f'[CAM2-OCR]    YOLO ready: '
+                  f'{camera2_ocr_instance.serial_detector is not None}',
+                  flush=True)
+    elif _panel_is_portrait and state.current_sequence == 1:
+        print(f'[CAM2-OCR] Portrait but not started: '
+              f'ocr_started={getattr(state,"ocr_started",False)} '
+              f'cam2={camera2_ocr_instance is not None}', flush=True)
 
     # ── 5. Update panel contour + mask from detection ─────────────
     if panel_det is not None:
