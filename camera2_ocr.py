@@ -763,9 +763,9 @@ class Camera2OCR:
                 print(f"[CAM2] Reader object={self.paddle_reader}", flush=True)
                 print(f"[CAM2] Reader id={id(self.paddle_reader)}", flush=True)
                 self._paddle_init_done = True
-                # Wake worker: re-queued crops (from loading window) need processing
+                # Wake worker so re-queued crops are processed immediately
                 self._ocr_event.set()
-                print("[CAM2] ✅ _ocr_event set — re-queued crops will now be processed",
+                print("[CAM2] ✅ _ocr_event set — re-queued crops will be processed",
                       flush=True)
             except Exception as e:
                 print(f"[CAM2] ❌ PaddleOCR init failed: {e}", flush=True)
@@ -1661,7 +1661,11 @@ class Camera2OCR:
         print(f"[OCR] Device       : {_dev_str}", flush=True)
 
         # ── PaddleOCR predict ─────────────────────────────────────────
+        print(f"[CAM2-OCR] Processing crop  size={cw}×{ch}  "
+              f"input={cw*2}×{ch*2}", flush=True)
+        print("[CAM2-OCR] Calling PaddleOCR", flush=True)
         raw_text, max_score = self._run_paddle_ocr(ocr_input, sd)
+        print(f"[CAM2-OCR] Raw OCR Result  = {repr(raw_text)}", flush=True)
 
         if raw_text:
             print(f"[OCR] Candidate    : '{raw_text}'", flush=True)
@@ -1677,8 +1681,10 @@ class Camera2OCR:
         hit = _correct_serial(raw_text)
         if hit:
             print(f"[OCR] Corrected    : {hit}", flush=True)
+            print(f"[CAM2-OCR] Corrected Serial = {hit}", flush=True)
         else:
             print(f"[OCR] Corrected    : INVALID — '{raw_text}' rejected", flush=True)
+            print(f"[CAM2-OCR] Corrected Serial = INVALID", flush=True)
 
         _elapsed = _time_mod.time() - _t0
         _write_pred_log(sd, hit, raw_text, max_score, None, _elapsed)
@@ -1906,6 +1912,7 @@ class Camera2OCR:
 
         print("━" * 64, flush=True)
         print(f"[CAM2] ✅ Serial CONFIRMED → {serial}", flush=True)
+        print(f"[CAM2-OCR] SERIAL CONFIRMED = {serial}", flush=True)
         print(f"[CAM2]    ocr_done=True  is_scanning=False", flush=True)
         print(f"[CAM2]    UI will show serial on next /api/cam2_status poll", flush=True)
         print("━" * 64, flush=True)
@@ -2015,26 +2022,22 @@ class Camera2OCR:
                         and crop is not None
                         and not self.ocr_done):
 
-                    # ── AUTO-TRIGGER: start OCR immediately when Camera2 YOLO
-                    # detects serial_number. Do NOT wait for app_vision.py to
-                    # call start_ocr() — that path depends on serial_det from
-                    # best.pt which has NO serial_number class → always None.
-                    # Camera2 serial.pt detection IS the trigger.
+                    # ── AUTO-TRIGGER OCR when Camera2 serial.pt detects ──────
+                    # Do NOT wait for app_vision to call start_ocr().
+                    # Camera2 serial.pt detection IS the only trigger needed.
                     if not self._is_scanning:
+                        # Use self._latest_det for confidence (set by _run_yolo_on_frame)
+                        # dets[] is local to _run_yolo_on_frame — NOT available here
+                        _conf = (self._latest_det[4]
+                                 if self._latest_det is not None else 0.0)
                         print("", flush=True)
                         print("[CAM2-OCR] 🚀 STARTING OCR FROM CAMERA2 SERIAL DETECTION",
                               flush=True)
-                        print(f"[CAM2-OCR]    serial.pt confidence: {dets[0][4]:.3f}",
-                              flush=True)
-                        print(f"[CAM2-OCR]    panel_folder: {self.panel_folder}",
-                              flush=True)
-                        # Full start_ocr(): resets votes, ocr_done, _yolo_active,
-                        # drains stale queue, sets _is_scanning=True
-                        self.start_ocr()
-                        print(f"[CAM2-OCR]    _is_scanning={self._is_scanning}",
-                              flush=True)
-                        # Wake the OCR worker immediately
-                        self._ocr_event.set()
+                        print(f"[CAM2-OCR]    confidence : {_conf:.3f}", flush=True)
+                        print(f"[CAM2-OCR]    panel_folder: {self.panel_folder}", flush=True)
+                        self.start_ocr()   # full reset: votes, ocr_done, _yolo_active
+                        print(f"[CAM2-OCR]    _is_scanning={self._is_scanning}", flush=True)
+                        self._ocr_event.set()   # wake OCR worker immediately
 
                     elapsed = time.time() - self._scan_start_ts_ref[0]
                     try:
@@ -2045,15 +2048,18 @@ class Camera2OCR:
                         print(f"[CAM2] Crop queued  Queue={self._ocr_crop_queue.qsize()}",
                               flush=True)
                     except Exception as e:
-                        print(f"[CAM2-YOLO] Queue push error: {e}")
+                        print(f"[CAM2-YOLO] Queue push error: {e}", flush=True)
                 elif detected and crop is not None and not self._is_scanning:
-                    print(f"[CAM2-YOLO] Detection ready but _is_scanning=False (waiting for start_ocr)")
+                    print("[CAM2-YOLO] Detection ready but _is_scanning=False",
+                          flush=True)
                 elif not detected:
                     if cur_id % 30 == 0:  # Log every 30 frames
                         print(f"[CAM2-YOLO] No detection @ frame {cur_id}")
 
             except Exception as e:
-                print(f"[CAM2-YOLO-THREAD] error: {e}")
+                import traceback
+                print(f"[CAM2-YOLO-THREAD] ❌ error: {e}", flush=True)
+                traceback.print_exc()
 
     # âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     #  MAIN LOOP
@@ -2271,10 +2277,8 @@ class Camera2OCR:
 
             # ── gate: PaddleOCR ready? ─────────────────────────────────
             if self.paddle_reader is None:
-                # Re-queue the crop BEFORE continue so it is not dropped.
-                # Previously: continue was before put() → dead code, crop lost.
-                print(f"[CAM2-OCR] ⏳ PaddleOCR still loading — re-queuing crop "
-                      f"(init_done={getattr(self,'_paddle_init_done',False)})",
+                # Re-queue BEFORE continue so crop is not lost (dead-code fix)
+                print(f"[CAM2-OCR] ⏳ PaddleOCR still loading — re-queuing crop",
                       flush=True)
                 try:
                     self._ocr_crop_queue.put_nowait(
