@@ -1920,7 +1920,7 @@ class Camera2OCR:
             except Exception:
                 pass
 
-            # CHANGE 1: rename removed - app_vision.py is sole rename owner
+            # rename handled solely by app_vision.py (avoids stale-path / dual-folder bug)
 
         if self.on_serial_detected:
             try: self.on_serial_detected(serial)
