@@ -984,7 +984,7 @@ def ensure_panel_folder():
     # so callers skip rather than creating a premature folder.
     # Require an actual SEQ1 snapshot before allocating the panel session.
     if not state.panel_id:
-        if state.current_sequence == 0 or state.seq1_snapshot_data is None:
+        if state.current_sequence < 1:
             return state.current_sequence_panel_folder
         state.panel_id = datetime.now().strftime("%H%M%S")
 
@@ -3474,9 +3474,11 @@ def process_frame(frame, detections):
 
             if (old_path and os.path.exists(old_path)
                     and serial and serial not in ('UNKNOWN', 'Reading...')):
-                # Only rename if serial differs from current folder name
-                if os.path.basename(old_path) != serial:
-                    new_path = os.path.join(os.path.dirname(old_path), serial)
+                # Only rename if folder name does not already include the serial
+                _target_name = (f"{serial}_{state.panel_id}"
+                                if state.panel_id else serial)
+                if os.path.basename(old_path) != _target_name:
+                    new_path = os.path.join(os.path.dirname(old_path), _target_name)
                     if not os.path.exists(new_path):
                         os.rename(old_path, new_path)
                         state.current_sequence_panel_folder = new_path
