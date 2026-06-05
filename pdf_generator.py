@@ -137,7 +137,7 @@ def generate_pdf_report(serial_number, panel_folder, seq_times=None, total_time=
                 t_str = f"{m}m {s}s" if m else f"{s}s"
                 status = "✓ Completed"
             else:
-                t_str = "—"
+                t_str = "0.0 s"
                 status = "✕ Missed"
             lt_rows.append([seq_names[i], t_str, status])
         

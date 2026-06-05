@@ -301,7 +301,9 @@ class PanelLogger:
 
     def panel_end(self, serial: str, result: str,
                   images_saved: int = 0, pdf_path: str = "",
-                  failure_reason: str = ""):
+                  failure_reason: str = "",
+                  seq_durations: dict = None,
+                  capture_statuses: dict = None):
         """Call at panel completion (success or failure)."""
         end_time = datetime.now()
         elapsed  = ""
@@ -315,6 +317,12 @@ class PanelLogger:
         ok = result.upper() in ("SUCCESS", "✅", "COMPLETE")
         icon = "✅" if ok else "❌"
 
+        seq_durations = seq_durations or {}
+        capture_statuses = capture_statuses or {}
+
+        def _fmt_time(s):
+            return f"{s:.1f}s" if s is not None else "0.0s"
+
         with self._lock:
             # Footer in panel_log.txt
             self._panel_raw(
@@ -323,7 +331,13 @@ class PanelLogger:
                 f"serial={serial or 'UNKNOWN'}\n"
                 f"Started  : {self._panel_start.strftime('%H:%M:%S') if self._panel_start else '?'}\n"
                 f"Finished : {end_time.strftime('%H:%M:%S')}\n"
-                f"Lead time: {elapsed}  ({lead_s:.1f}s)\n"
+                f"Panel Duration: {elapsed}  ({lead_s:.1f}s)\n"
+                f"SEQ1 Duration : {_fmt_time(seq_durations.get(1))}\n"
+                f"SEQ2 Duration : {_fmt_time(seq_durations.get(2))}\n"
+                f"SEQ3 Duration : {_fmt_time(seq_durations.get(3))}\n"
+                f"Capture Status: SEQ1={capture_statuses.get(1, 'MISSING')}  "
+                f"SEQ2={capture_statuses.get(2, 'MISSING')}  "
+                f"SEQ3={capture_statuses.get(3, 'MISSING')}\n"
                 f"Images   : {images_saved}\n"
                 f"PDF      : {os.path.basename(pdf_path) if pdf_path else 'not generated'}\n"
             )
@@ -396,6 +410,21 @@ class PanelLogger:
         with self._lock:
             for f in files:
                 self._panel(f"  SAVED           {os.path.basename(f)}")
+
+    def capture_event(self, seq_name: str, status: str):
+        msg = f"CAPTURE EVENT   ✅  {seq_name:<10}  status={status}"
+        with self._lock:
+            self._panel(msg)
+
+    def missed_detection_event(self, seq_name: str, reason: str):
+        msg = f"MISSED DETECT   ⚠️  {seq_name:<10}  reason={reason}"
+        with self._lock:
+            self._panel(msg)
+
+    def serial_trace(self, trace_type: str, frame_idx: int, conf: float):
+        msg = f"SERIAL TRACE    🔍  {trace_type:<10} frame={frame_idx}  conf={conf:.2f}"
+        with self._lock:
+            self._panel(msg)
 
     # ── OCR / SERIAL ─────────────────────────────────────────────────────────
 

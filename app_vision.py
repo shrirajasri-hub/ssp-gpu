@@ -160,6 +160,8 @@ import re
 import platform
 from datetime import datetime
 from collections import deque
+from panel_logger import get_logger
+log = get_logger()
 
 from flask import Flask, render_template, Response, jsonify, request
 from flask_cors import CORS
@@ -1534,6 +1536,20 @@ def _finalize_panel():
                 panel_start=panel_start_snap,
                 cam2_image=final_cam2_image
             )
+            
+            # --- FINAL DIAGNOSTICS LOG ---
+            import glob as _gl
+            saved_images = len(_gl.glob(os.path.join(pdf_folder, '*.jpg'))) + len(_gl.glob(os.path.join(pdf_folder, 'crops', '*.jpg')))
+            log.panel_end(
+                serial=final_serial,
+                result="SUCCESS" if pdf_path else "FAILED",
+                images_saved=saved_images,
+                pdf_path=pdf_path or "",
+                failure_reason=getattr(state, 'failure_reason', '') if not pdf_path else "",
+                seq_durations=seq_times_snap,
+                capture_statuses=getattr(state, 'seq_capture_status', {})
+            )
+            
             if pdf_path:
                 print(f"[DEBUG PDF] ✅ PDF generated successfully at: {pdf_path}")
             else:
@@ -1997,9 +2013,16 @@ def update_seq(new_seq):
         # STRICT GATING: Prevent SEQ3 from becoming active before SEQ2 is fully wiped and completed.
         if new_seq == 3 and prev == 2:
             if not state.completed.get(2, False):
-                print('[SEQ3] ⚠️ Cannot advance to SEQ3: SEQ2 wiping not complete')
-                state.status_msg = 'SEQ2 INCOMPLETE — finish wiping SEQ2 before flipping'
-                return
+                print('[SEQ3] ⚠️ SEQ2 not wiped, but operator advanced. Force completing SEQ2.')
+                state.completed[2] = True
+                if not getattr(state, 'seq2_auto_captured', False):
+                    _bf2 = getattr(state, 'seq2_best_frame', None)
+                    if _bf2 is not None:
+                        capture(2, _bf2, metadata=getattr(state, 'seq2_best_meta', {}))
+                        state.seq2_auto_captured = True
+                        if not hasattr(state, 'seq_capture_status'): state.seq_capture_status = {}
+                        state.seq_capture_status[2] = "COMPLETED_AUTO"
+                        log.capture_event("SEQ2", "COMPLETED_AUTO")
 
         state.current_sequence = new_seq
         state.sequence_status[new_seq] = "active"
@@ -2663,6 +2686,22 @@ def process_frame(frame, detections):
     if not hand_present:
         state.last_clean = frame.copy()
 
+    if serial_det:
+        s_conf = serial_det['confidence']
+        # FIRST
+        if getattr(state, 'serial_first_trace', None) is None:
+            state.serial_first_trace = (state.frame_count, s_conf)
+            log.serial_trace("FIRST", state.frame_count, s_conf)
+        
+        # BEST
+        best = getattr(state, 'serial_best_trace', (0, 0.0))
+        if s_conf > best[1]:
+            state.serial_best_trace = (state.frame_count, s_conf)
+            log.serial_trace("BEST", state.frame_count, s_conf)
+            
+        # LAST
+        state.serial_last_trace = (state.frame_count, s_conf)
+
     # [RULE] Trigger snapshot when panel_seq1 visible, no hand blocking.
     # has_serial removed — best.hef does not detect serial_number class.
     # Protection against empty table: _thresh_A=0.60 + panel size gate above.
@@ -2709,23 +2748,28 @@ def process_frame(frame, detections):
 
             # Only commit snapshot when ALL stability checks pass
             if panel_is_stable:
+                state.seq1_snapshot_data = {
+                    'frame':      frame.copy(),
+                    'rect':       current_rect,
+                    'contour':    getattr(state, 'panel_contour', None),
+                    'serial_det': serial_det,
+                }
+                state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
+                # [NEW] Trigger folder creation immediately
+                ensure_panel_folder()
+                if not hasattr(state, 'seq_capture_status'): state.seq_capture_status = {}
                 if serial_det is None:
-                    print("[SEQ1] Waiting for serial_number class before committing snapshot")
+                    print(f"[SEQ1] ✅ Snapshot taken WITHOUT serial_number (Fallback) at frame {state.seq1_detection_count} — sharpness={frame_sharp:.0f}")
+                    state.seq1_snapshot_data['fallback'] = True
+                    state.seq_capture_status[1] = "FALLBACK_NO_SERIAL"
+                    log.capture_event("SEQ1", "FALLBACK_NO_SERIAL")
                 else:
-                    state.seq1_snapshot_data = {
-                        'frame':      frame.copy(),
-                        'rect':       current_rect,
-                        'contour':    getattr(state, 'panel_contour', None),
-                        'serial_det': serial_det,
-                    }
-                    state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
-                    # [NEW] Trigger folder creation exactly at snapshot moment
-                    ensure_panel_folder()
-                    print(f"[SEQ1] ✅ Snapshot taken and Folder Created at frame {state.seq1_detection_count} "
-                          f"— sharpness={frame_sharp:.0f}")
+                    print(f"[SEQ1] ✅ Snapshot taken WITH serial_number at frame {state.seq1_detection_count} — sharpness={frame_sharp:.0f}")
+                    state.seq_capture_status[1] = "NORMAL_CAPTURE"
+                    log.capture_event("SEQ1", "NORMAL_CAPTURE")
 
         # EARLY FOLDER CREATION: allocate the panel folder as soon as
-        # SEQ1 is stable for 2 frames and serial_number is detected.
+        # SEQ1 is stable for 2 frames.
         allocate_panel_folder_for_seq1(serial_present=(serial_det is not None))
     elif not is_panel_seq1:
         # Reset counter when panel is no longer visible
@@ -2918,9 +2962,7 @@ def process_frame(frame, detections):
                               f"sharp={frame_sharp:.0f} conf={_det_conf:.2f} "
                               f"area={_panel_area}/{int(0.15*w*h)}")
 
-                        _fire_threshold = (1 if (_det_conf >= 0.50 and frame_sharp >= 15
-                                                 and state.seq2_best_frame is not None)
-                                           else 3)
+                        _fire_threshold = 2
                         if state.seq2_landscape_count >= _fire_threshold:
                             best_f = state.seq2_best_frame or frame.copy()
                             print(f"[CAPTURE] SEQ2 ✅ confirmed "
@@ -2930,6 +2972,9 @@ def process_frame(frame, detections):
                             capture(2, best_f, metadata=state.seq2_best_meta)
                             state.seq2_auto_captured = True
                             state.seq_capture_data[2] = best_f
+                            if not hasattr(state, 'seq_capture_status'): state.seq_capture_status = {}
+                            state.seq_capture_status[2] = "COMPLETED_AUTO"
+                            log.capture_event("SEQ2", "COMPLETED_AUTO")
                             print(f"[CAPTURE] SEQ2 image saved → UI will show green 'captured' banner")
                             print(f"[CAPTURE] seq2_auto_captured={state.seq2_auto_captured} "
                                   f"(triggers landscape_alert='captured')")
@@ -3480,6 +3525,9 @@ def process_frame(frame, detections):
             if state.serial_number in (None, 'UNKNOWN', 'Searching...', 'Reading...', ''):
                 state.serial_number = cam2_serial
                 state.ocr_done      = True
+                if hasattr(state, 'seq_capture_status') and state.seq_capture_status.get(1) == "FALLBACK_NO_SERIAL":
+                    state.seq_capture_status[1] = "LATE_SERIAL_BIND"
+                    log.capture_event("SEQ1", "LATE_SERIAL_BIND")
                 print(f'[CAM2-OCR] Serial confirmed and pushed to UI: {cam2_serial}')
 
     if state.ocr_done and not getattr(state, 'folder_renamed', False):
