@@ -169,9 +169,9 @@ try:
     _PANEL_LOGGER_OK = True
 except ImportError:
     _PANEL_LOGGER_OK = False
-    class _FakeLog:
+    class _FakePLog:
         def __getattr__(self, n): return lambda *a, **k: None
-    _get_panel_logger = _FakeLog
+    _get_panel_logger = _FakePLog
 # import pytesseract  # Removed: Migrated to EasyOCR for memory efficiency on Pi
 
 # Camera-2 OCR module (standalone — no Camera-1 dependency)
@@ -265,12 +265,9 @@ TEMP_DIR       = os.path.join(SCRIPT_DIR, "temp_frames")
 
 for d in (MODELS_DIR, BASE_STORAGE, os.path.join(BASE_STORAGE, '_uploads'), TEMP_DIR):
     os.makedirs(d, exist_ok=True)
-
-# ── Panel logger (writes to panel_data/{date}/app_log + panel_log) ────────────
 _plog = _get_panel_logger()
 if _PANEL_LOGGER_OK:
     _plog.init(BASE_STORAGE)
-    print(f"[LOG] panel_logger active → {BASE_STORAGE}")
 
 
 
@@ -682,6 +679,7 @@ class PanelDetectionState:
         self.last_wiping_time    = None
         self.current_sequence_panel_name = None
         self.current_sequence_panel_folder = None
+        self.panel_id            = None
         self.model_sees          = 'NONE'
         # Reset Camera-2 OCR flags for new panel
         self.ocr_started          = False
@@ -1015,11 +1013,12 @@ def allocate_panel_folder_for_seq1(serial_present=False):
 
     if (state.seq1_detection_count >= 2
             and state.current_sequence in (0, 1)):
-        state.panel_id = datetime.now().strftime("%H%M%S")
+        if not state.panel_id:
+            state.panel_id = datetime.now().strftime("%H%M%S")
         state.current_sequence_panel_folder = get_panel_folder(
             state.serial_number or 'SSP-SEQ', state.panel_id)
         _plog.panel_start(state.panel_id, state.current_sequence_panel_folder)
-        print(f"[SEQ1-FOLDER] ✅ Panel folder created (EARLY - 2 stable frames)")
+        print(f"[SEQ1-FOLDER] ✅ Panel folder: {state.current_sequence_panel_folder}")
         print(f"[SEQ1-FOLDER]    Path: {state.current_sequence_panel_folder}")
         print(f"[SEQ1-FOLDER]    Panel ID: {state.panel_id}")
         print(f"[SEQ1-FOLDER]    Detection count: {state.seq1_detection_count}")
@@ -1219,11 +1218,9 @@ def capture_sequence_images(cap_data, sequence_id, serial_number):
                 size_kb = os.path.getsize(full_path) // 1024
                 print(f"  ✅ SEQ{sequence_id} FullFrame: {os.path.basename(full_path)}"
                       f"  ({fw}×{fh}, {size_kb} KB, sharpness={sharpness:.0f})")
-                _plog.image_saved(f"SEQ{sequence_id}_Full", full_path,
-                                  f"{fw}×{fh} {size_kb}KB")
+                _plog.image_saved(f"SEQ{sequence_id}_Full", full_path, f"{fw}×{fh} {size_kb}KB")
             else:
                 print(f"  ❌ SEQ{sequence_id} full-frame save FAILED")
-                _plog.image_failed(f"SEQ{sequence_id}_Full", "cv2.imwrite returned False")
                 return None
             return saved
 
@@ -1234,11 +1231,9 @@ def capture_sequence_images(cap_data, sequence_id, serial_number):
             size_kb = os.path.getsize(full_path) // 1024
             print(f"  ✅ SEQ{sequence_id} Full: {os.path.basename(full_path)}"
                   f"  ({fw}×{fh}, {size_kb} KB, sharpness={sharpness:.0f})")
-            _plog.image_saved(f"SEQ{sequence_id}_Full", full_path,
-                              f"{fw}×{fh} {size_kb}KB")
+            _plog.image_saved(f"SEQ{sequence_id}_Full", full_path, f"{fw}×{fh} {size_kb}KB")
         else:
             print(f"  ❌ SEQ{sequence_id} Full save FAILED")
-            _plog.image_failed(f"SEQ{sequence_id}_Full", "cv2.imwrite returned False")
             return None
 
         # ── Step 3: SEQ1 — four zone crops from the FULL FRAME ──────────
@@ -1413,11 +1408,14 @@ def _finalize_panel():
     panel_start = state.panel_start_time or state.panel_end_time
     total_secs  = state.panel_end_time - panel_start
 
+    for _si in (1, 2, 3):
+        if not state.seq_start_time.get(_si) and state.seq_end_time.get(_si):
+            state.seq_start_time[_si] = panel_start
     seq_times = {}
     for i in (1, 2, 3):
         s = state.seq_start_time.get(i)
         e = state.seq_end_time.get(i)
-        if s and e:
+        if s and e and e >= s:
             seq_times[i] = round(e - s, 1)
         else:
             seq_times[i] = None
@@ -1543,16 +1541,13 @@ def _finalize_panel():
             if pdf_path:
                 print(f"[DEBUG PDF] ✅ PDF generated successfully at: {pdf_path}")
                 _plog.pdf_complete(pdf_path, pages=6)
-                _plog.panel_end(final_serial or 'UNKNOWN', 'SUCCESS',
+                _plog.panel_end(final_serial or "UNKNOWN", "SUCCESS",
                                 images_saved=sum(1 for k in (1,2,3)
                                                  if state.sequence_captured.get(k)),
                                 pdf_path=pdf_path)
             else:
                 print("[DEBUG PDF] ⚠️  PDF generation returned None")
                 state.failure_reason = "PDF Generation Failed: Missing images"
-                _plog.pdf_failed("generate_pdf_report returned None")
-                _plog.panel_end(final_serial or 'UNKNOWN', 'FAILED',
-                                failure_reason="PDF generation failed")
         except Exception as exc:
             import traceback
             err_msg = f"PDF Error: {str(exc)}"
@@ -1896,6 +1891,7 @@ def complete(seq):
                                            else getattr(state, 'seq3_best_meta', None)) or {})
                 if result:
                     if seq == 2: state.seq2_auto_captured = True
+                    if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                     else:        state.seq3_auto_captured = True
             else:
                 # Priority 2: last hand-free clean frame (landscape only)
@@ -1909,6 +1905,7 @@ def complete(seq):
                         result = capture(seq, fb)
                         if result:
                             if seq == 2: state.seq2_auto_captured = True
+                            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                             else:        state.seq3_auto_captured = True
                     else:
                         print(f"[CAPTURE] SEQ{seq}: ⚠️ last clean frame is portrait ({fw}×{fh}) — skipped")
@@ -2054,6 +2051,7 @@ def update_seq(new_seq):
                           f'(best_sharp={state.seq2_best_sharp:.0f})')
                     capture(2, _bf2, metadata=state.seq2_best_meta or {})
                     state.seq2_auto_captured = True
+                    if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                 else:
                     # No landscape frame yet — use last clean hand-free frame
                     _fb = (state.last_clean if state.last_clean is not None
@@ -2064,6 +2062,7 @@ def update_seq(new_seq):
                             print('[SEQ2] ⚡ Force-capturing SEQ2 using last clean frame')
                             capture(2, _fb)
                             state.seq2_auto_captured = True
+                            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                         else:
                             print('[SEQ2] ⚠️ No landscape frame available for SEQ2 force-capture')
                     else:
@@ -2248,6 +2247,7 @@ def update_wiping(hand_present, motion):
                     if fb is not None:
                         capture(2, fb, metadata=state.seq2_best_meta or {})
                         state.seq2_auto_captured = True
+                        if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                         state.seq_capture_data[2] = fb
                     else:
                         print("[SEQ2] ⚠️ 100% wipe but NO horizontal frame tracked — "
@@ -2606,7 +2606,7 @@ def process_frame(frame, detections):
                        and d['confidence'] >= 0.5]
     serial_candidates = [d for d in detections
                          if d['name'] in ('serial_number', 'serial_number_region')
-                         and d['confidence'] >= 0.15]   # 0.3→0.15: Camera1 sees serial at edge
+                         and d['confidence'] >= 0.15]
 
     # ── 2. Select BEST panel detection — TWO-TRACK logic ───────────
     #
@@ -2704,7 +2704,7 @@ def process_frame(frame, detections):
                 cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
 
             panel_is_stable = True
-            if frame_sharp < 12:
+            if frame_sharp < 12:  # FIX D2: 25->12 for Pi H.264 RTSP
                 panel_is_stable = False
                 print(f"[SEQ1] Frame too blurry (sharpness={frame_sharp:.0f} < 12) - waiting")
 
@@ -2712,16 +2712,21 @@ def process_frame(frame, detections):
                 if panel_det is not None:
                     bx1, by1, bx2, by2 = panel_det['bbox']
                     current_rect = (bx1, by1, bx2 - bx1, by2 - by1)
-                    if (bx2 - bx1) < ((by2 - by1) * 1.05):
+                    # [RULE] Panel must be clearly horizontal (Landscape)
+                    if (bx2 - bx1) < ((by2 - by1) * 1.05):  # FIX D2: 1.15->1.05 for Pi bbox rounding
                         print(f"[SEQ1] Panel is portrait - capturing anyway as requested")
+                    else:
+                        pass
                 else:
+                    # Fallback if only serial_number was seen: use full frame as panel_rect
                     current_rect = (0, 0, frame.shape[1], frame.shape[0])
 
-            # CHANGE A2: commit snapshot when panel_is_stable AND serial_number
-            # detected by Camera 1 (threshold now 0.15).  Camera 1 sees both
-            # panel_seq1 and serial_number in the same landscape frame.
+            # Only commit snapshot when ALL stability checks pass
             if panel_is_stable:
-                if serial_det is not None:
+                _commit = serial_det is not None or state.seq1_detection_count >= 8
+                if not _commit:
+                    print(f"[SEQ1] waiting serial_number ({state.seq1_detection_count}/8)")
+                if _commit and state.seq1_snapshot_data is None:
                     state.seq1_snapshot_data = {
                         'frame':      frame.copy(),
                         'rect':       current_rect,
@@ -2730,14 +2735,11 @@ def process_frame(frame, detections):
                     }
                     state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
                     allocate_panel_folder_for_seq1()
-                    print(f"[SEQ1] ✅ Snapshot committed (landscape) "
-                          f"frame={state.seq1_detection_count} "
-                          f"sharp={frame_sharp:.0f}")
-                else:
-                    print(f"[SEQ1] stable but serial_number not yet detected "
-                          f"(frame={state.seq1_detection_count}) — waiting")
+                    print(f"[SEQ1] ✅ Snapshot committed f={state.seq1_detection_count} "
+                          f"serial_det={serial_det is not None} sharp={frame_sharp:.0f}")
 
-        # EARLY FOLDER CREATION when detection count >= 2
+        # EARLY FOLDER CREATION: allocate the panel folder as soon as
+        # SEQ1 is stable for 2 frames and serial_number is detected.
         allocate_panel_folder_for_seq1(serial_present=(serial_det is not None))
     elif not is_panel_seq1:
         # Reset counter when panel is no longer visible
@@ -2837,60 +2839,18 @@ def process_frame(frame, detections):
     conf_seq = stable_seq(raw_seq_id)
 
     # ── SEQ1 ─────────────────────────────────────────────────────────
-    # Guard: only attempt once.
+    # Guard: only attempt once. If capture() fails (disk full, folder race etc.)
+    # we do NOT retry every frame at 25fps — that floods logs and wastes I/O.
+    # seq1_auto_captured is set True on the first attempt regardless of outcome;
+    # a failure is logged clearly so the operator can investigate.
     if not state.seq1_auto_captured and state.seq1_snapshot_data is not None:
-        state.seq1_auto_captured = True
+        state.seq1_auto_captured = True   # mark immediately — no repeated attempts
         ok = capture(1, state.seq1_snapshot_data['frame'], metadata=state.seq1_snapshot_data)
         if ok:
             print("[CAPTURE] SEQ1 ✅ — full frame + crops saved")
         else:
             print("[CAPTURE] SEQ1 ❌ — capture_sequence_images failed "
                   "(check folder, disk space, frame validity)")
-
-    # ── SEQ1 PORTRAIT FALLBACK ────────────────────────────────────────
-    # If Camera 1 missed the landscape frame (stream drop or serial_number
-    # not detected in landscape), the panel may now be portrait.
-    # Camera 1 still sees panel_seq1 in portrait → capture that frame as SEQ1.
-    # Only panel_seq1 is required here — serial_number not needed (panel is
-    # tilted so serial face now points to Camera 2, not Camera 1).
-    if (not state.seq1_auto_captured
-            and state.current_sequence in (0, 1)
-            and best_any_panel is not None
-            and raw_seq_id == 1
-            and not hand_present):
-        # Check portrait: height > width
-        _bp = best_any_panel['bbox']
-        _bw = _bp[2] - _bp[0]
-        _bh = _bp[3] - _bp[1]
-        _is_portrait_fallback = (_bh > _bw * 1.05)
-
-        if _is_portrait_fallback:
-            _fb_sharp = cv2.Laplacian(
-                cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
-                cv2.CV_64F).var()
-            if _fb_sharp >= 12:
-                # Ensure folder exists — create now if not already
-                _fb_folder = allocate_panel_folder_for_seq1()
-                if _fb_folder is None:
-                    _fb_folder = ensure_panel_folder()
-                if _fb_folder:
-                    print(f"[SEQ1-FALLBACK] ⚠️  Landscape missed — "
-                          f"capturing portrait frame as SEQ1 "
-                          f"(sharp={_fb_sharp:.0f})")
-                    _fb_meta = {
-                        'frame':   frame.copy(),
-                        'rect':    (_bp[0], _bp[1], _bw, _bh),
-                        'contour': getattr(state, 'panel_contour', None),
-                        'serial_det': None,
-                    }
-                    state.seq1_snapshot_data  = _fb_meta
-                    state.seq1_first_clean_frame = frame.copy()
-                    state.seq1_auto_captured  = True
-                    ok = capture(1, frame, metadata=_fb_meta)
-                    if ok:
-                        print("[SEQ1-FALLBACK] ✅ Portrait SEQ1 saved")
-                    else:
-                        print("[SEQ1-FALLBACK] ❌ Portrait SEQ1 capture failed")
 
 
     # ── SEQ2  ─────────────────────────────────────────────────────────────────
@@ -2983,6 +2943,7 @@ def process_frame(frame, detections):
                             # ✅ FIX #3: Explicitly capture SEQ2 image
                             capture(2, best_f, metadata=state.seq2_best_meta)
                             state.seq2_auto_captured = True
+                            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                             state.seq_capture_data[2] = best_f
                             print(f"[CAPTURE] SEQ2 image saved → UI will show green 'captured' banner")
                             print(f"[CAPTURE] seq2_auto_captured={state.seq2_auto_captured} "
@@ -3020,6 +2981,7 @@ def process_frame(frame, detections):
             print("[CAPTURE] SEQ2 FALLBACK — using tracked horizontal frame")
             capture(2, fb, metadata=state.seq2_best_meta or {})
             state.seq2_auto_captured = True
+            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
             state.seq_capture_data[2] = fb
         else:
             print("[CAPTURE] SEQ2 FALLBACK ⚠️ no frame tracked — "
@@ -3081,6 +3043,7 @@ def process_frame(frame, detections):
                       f"(conf={_cross_conf:.2f} sharp={_c_sharp:.0f})")
                 capture(2, frame.copy(), metadata=meta)
                 state.seq2_auto_captured = True
+                if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                 state.seq_capture_data[2] = frame.copy()
 
     # ── SEQ2 hand-presence fallback ───────────────────────────────────────────
@@ -3097,6 +3060,7 @@ def process_frame(frame, detections):
             print("[CAPTURE] SEQ2 HAND FALLBACK — using tracked horizontal frame")
             capture(2, fb, metadata=state.seq2_best_meta or {})
             state.seq2_auto_captured = True
+            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
             state.seq_capture_data[2] = fb
         else:
             print("[CAPTURE] SEQ2 HAND FALLBACK ⚠️ hand present but no landscape frame tracked — skipping"
@@ -3114,6 +3078,7 @@ def process_frame(frame, detections):
                   f"(sharp={state.seq2_best_sharp:.0f})")
             capture(2, fb, metadata=state.seq2_best_meta or {})
             state.seq2_auto_captured = True
+            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
             state.seq_capture_data[2] = fb
         else:
             print("[CAPTURE] SEQ2 TIMEOUT ⚠️ 20+ frames but NO landscape frame — "
@@ -3229,6 +3194,7 @@ def process_frame(frame, detections):
                                       'saving SEQ2 from best tracked landscape frame')
                                 capture(2, _bf2, metadata=state.seq2_best_meta or {})
                                 state.seq2_auto_captured = True
+                                if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                             else:
                                 print('[SEQ3] ⚠️ SEQ3 ready but SEQ2 has no landscape frame — '
                                       'SEQ2 image will be missing in PDF')
@@ -3543,16 +3509,14 @@ def process_frame(frame, detections):
 
             if (old_path and os.path.exists(old_path)
                     and serial and serial not in ('UNKNOWN', 'Reading...')):
-                # Only rename if folder not already named with serial
-                _target_name = (f"{serial}_{state.panel_id}"
-                                if state.panel_id else serial)
-                if os.path.basename(old_path) != _target_name:
-                    new_path = os.path.join(os.path.dirname(old_path),
-                                            _target_name)
+                _tgt = f"{serial}_{state.panel_id}" if state.panel_id else serial
+                if os.path.basename(old_path) != _tgt:
+                    new_path = os.path.join(os.path.dirname(old_path), _tgt)
                     if not os.path.exists(new_path):
                         os.rename(old_path, new_path)
                         state.current_sequence_panel_folder = new_path
-                        print(f"[FOLDER] Renamed → {new_path}")
+                        _plog.folder_renamed(old_path, new_path)
+                        print(f"[FOLDER] ✅ Renamed → {os.path.basename(new_path)}")
                     else:
                         state.current_sequence_panel_folder = new_path
 
@@ -3576,7 +3540,6 @@ def process_frame(frame, detections):
                 rename_panel_images(state.current_sequence_panel_folder, serial)
 
                 state.folder_renamed = True
-                _plog.folder_renamed(old_path, new_path if 'new_path' in dir() else old_path)
 
                 # Save best Camera-2 frame to panel folder as Serial_Original.
                 # Priority: cam2_raw_path (best slot frame already saved to disk)
@@ -3744,9 +3707,9 @@ def _stream(cap, native_fps=None):
         fails = 0
         last_ok = time.time()
         last_read_time = time.time()
-        # Reduced 15s→5s: with FFmpeg -stimeout 5s + watchdog 8s,
-        # camera recovery happens within 8s. 15s was too slow to detect drops.
-        STALE_TIMEOUT = 5.0
+        # FIX C2: 8 s -> 15 s - TLS-RTSP reconnect on Pi takes up to 12 s;
+        # 8 s caused a reconnect storm that saturated the Pi CPU.
+        STALE_TIMEOUT = 15.0
 
         while running.is_set() and state.stream_generation == my_generation:
             # ── Playback Throttling (for video files) ──────────────────
@@ -4818,32 +4781,6 @@ class FFmpegVideoCapture:
         
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.thread.start()
-        # Watchdog: kills FFmpeg if no frame for 8s (handles blocked readinto)
-        self._watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
-        self._watchdog.start()
-
-    def _watchdog_loop(self):
-        """Kill FFmpeg process if no frame arrives for 8 seconds.
-        Handles the case where readinto() blocks because TCP is alive but
-        camera stopped sending data (most common silent-drop scenario)."""
-        import time
-        NO_FRAME_TIMEOUT = 8.0
-        while self.running:
-            time.sleep(1.0)
-            last_ts = getattr(self, '_last_frame_ts', None)
-            if last_ts is None:
-                continue
-            gap = time.time() - last_ts
-            if gap > NO_FRAME_TIMEOUT:
-                proc = getattr(self, '_current_proc', None)
-                if proc is not None:
-                    print(f"[CAM1-WATCHDOG] ⚠️  No frame for {gap:.1f}s "
-                          f"— killing stuck FFmpeg (readinto unblocked)",
-                          flush=True)
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
         
     def _capture_loop(self):
         import subprocess
@@ -4860,15 +4797,6 @@ class FFmpegVideoCapture:
             return
 
         cmd_base = [FFMPEG_BIN,
-                    # ── Reconnect flags: auto-recover from network drops ──────
-                    '-reconnect',          '1',
-                    '-reconnect_streamed', '1',
-                    '-reconnect_delay_max','3',
-                    # ── Socket timeout: unblocks readinto() after 5s ─────────
-                    # Without this, readinto() blocks forever when TCP is alive
-                    # but camera stops sending data (most common drop cause).
-                    '-stimeout',          '5000000',   # microseconds = 5s
-                    # ── Low-latency flags ─────────────────────────────────────
                     '-thread_queue_size', '64',
                     '-fflags',            'nobuffer',
                     '-flags',             'low_delay',
@@ -4897,7 +4825,6 @@ class FFmpegVideoCapture:
                     # CHANGED from DEVNULL → PIPE so FFmpeg errors are visible
                     stderr=subprocess.PIPE,
                     bufsize=self.frame_size)
-                self._current_proc = proc   # expose for watchdog
                 
                 # Drain stderr in background so it never blocks stdout
                 def _drain(p):
@@ -4944,14 +4871,9 @@ class FFmpegVideoCapture:
                 frame = np.frombuffer(_buf, dtype=np.uint8
                                      ).reshape((self.height, self.width, 3)).copy()
                 with self.lock:
-                    prev_ts = getattr(self, '_last_frame_ts', None)
-                    self.latest_frame   = frame
+                    self.latest_frame  = frame
                     self._last_frame_ts = time.time()
-                    self._frame_id      = getattr(self, '_frame_id', 0) + 1
-                # Log reconnect when frames resume after a gap
-                if prev_ts is not None and (time.time() - prev_ts) > 3.0:
-                    print(f"[CAM1-FFMPEG] ✅ Stream reconnected "
-                          f"(gap={time.time()-prev_ts:.1f}s)", flush=True)
+                    self._frame_id     = getattr(self, '_frame_id', 0) + 1
                     
             try:
                 proc.kill()
@@ -4959,18 +4881,15 @@ class FFmpegVideoCapture:
             except:
                 pass
             
-                if self.running:
-                    print(f"[CAM1-FFMPEG] 🔄 Restarting FFmpeg "
-                          f"(failures={failures}) — reconnecting in 0.5s",
-                          flush=True)
-                    # REDUCED: 0.5 s (was 1.0 s) — faster reconnect
-                    time.sleep(0.5)
+            if self.running:
+                # REDUCED: 0.5 s (was 1.0 s) — faster reconnect
+                time.sleep(0.5)
 
     def read(self):
         with self.lock:
             if self.latest_frame is None:
                 return False, None
-            if time.time() - getattr(self, '_last_frame_ts', time.time()) > 5.0:
+            if time.time() - getattr(self, '_last_frame_ts', time.time()) > 20.0:
                 return False, None
             # Only return True when a genuinely NEW frame arrived (prevents READER
             # from spinning at CPU-max speed copying the same 6 MB frame repeatedly).

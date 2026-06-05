@@ -1,0 +1,5 @@
+{
+    "_comment": "Panel Vision — Camera Configuration. Edit URLs then restart.",
+    "camera1_url": "rtsp://admin:Vidana_123@192.10.70.188:554/video/live?channel=1&subtype=0",
+    "camera2_url": "rtsp://admin:Vidana_123@192.10.70.192:443/video/live?channel=1&subtype=0"
+}

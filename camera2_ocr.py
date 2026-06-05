@@ -698,12 +698,15 @@ class Camera2OCR:
         self._best_full_sharp       = 0.0
 
         # ââ OCR worker thread (separate from main loop) ââââââââ
-        # OCR can take 10-60s on Pi (EasyOCR Ã preprocessing variants Ã 3 frames).
-        # Running it in the main loop would freeze YOLO and UI annotation.
-        # Solution: main loop signals this event; OCR worker runs independently.
+        # -- OCR worker thread (separate from main loop) --
+        # The OCR worker is queue-driven: it blocks on
+        # _ocr_crop_queue.get(timeout=1) and never waits on _ocr_event.
+        # _ocr_event is retained ONLY so _init_paddle can signal
+        # PaddleOCR-ready status. All clear()/set() calls that gated
+        # the old EasyOCR worker have been removed by FIX 1.
+        # Do NOT add _ocr_event.wait() to the OCR worker.
         self._ocr_event           = threading.Event()
         self._ocr_running         = False   # True while OCR worker is active
-
         # ââ serial.pt + EasyOCR load in background âââââââââââââââââââââ
         # Both are heavy (2-8s each on Pi). Loading them synchronously
         # would block the main loop and the Camera-2 stream start.
@@ -750,6 +753,18 @@ class Camera2OCR:
             import traceback
             print("[CAM2] Initializing PaddleOCR...", flush=True)
             print(f"[CAM2] INIT INSTANCE id(self)={id(self)}", flush=True)
+            # ── TASK 5: Safe GPU→CPU fallback ──────────────────────────────
+            try:
+                import paddle as _paddle
+                _gpu_available = _paddle.device.is_compiled_with_cuda()
+            except Exception:
+                _gpu_available = False
+            _device_type = "gpu" if _gpu_available else "cpu"
+            if _gpu_available:
+                print("[OCR] Using GPU (PaddleOCR)", flush=True)
+            else:
+                print("[OCR] Using CPU (PaddleOCR — CUDA not available or Paddle not GPU build)",
+                      flush=True)
             try:
                 from paddleocr import PaddleOCR
                 self.paddle_reader = PaddleOCR(
@@ -757,17 +772,37 @@ class Camera2OCR:
                     lang='en',
                     enable_mkldnn=False,
                     ocr_version="PP-OCRv5",
-                    device="gpu"
+                    device=_device_type
                 )
-                print("[CAM2] ✅ PaddleOCR reader created", flush=True)
+                print(f"[CAM2] ✅ PaddleOCR reader created (device={_device_type})", flush=True)
                 print(f"[CAM2] Reader object={self.paddle_reader}", flush=True)
                 print(f"[CAM2] Reader id={id(self.paddle_reader)}", flush=True)
                 self._paddle_init_done = True
                 self._ocr_event.set()   # wake worker
             except Exception as e:
-                print(f"[CAM2] ❌ PaddleOCR init failed: {e}", flush=True)
+                print(f"[CAM2] ❌ PaddleOCR init failed (device={_device_type}): {e}",
+                      flush=True)
                 import traceback
                 traceback.print_exc()
+                # If GPU init failed, attempt CPU fallback
+                if _device_type == "gpu":
+                    print("[OCR] GPU init failed — retrying with CPU", flush=True)
+                    try:
+                        self.paddle_reader = PaddleOCR(
+                            use_textline_orientation=True,
+                            lang='en',
+                            enable_mkldnn=False,
+                            ocr_version="PP-OCRv5",
+                            device="cpu"
+                        )
+                        print("[OCR] Using CPU (fallback after GPU failure)", flush=True)
+                        self._paddle_init_done = True
+                        self._ocr_event.set()
+                        return
+                    except Exception as e2:
+                        print(f"[CAM2] ❌ PaddleOCR CPU fallback also failed: {e2}",
+                              flush=True)
+                        traceback.print_exc()
                 self._paddle_init_failed = True
                 self._paddle_init_done = True
 
@@ -789,21 +824,33 @@ class Camera2OCR:
 
         # ââ Per-frame OCR queue (like video_test_03_cv2.py) âââââââââââ
         # Every YOLO detection â crop pushed here â OCR worker processes
-        # immediately â votes â 2 matches = confirmed serial.
+        # â”€â”€ Per-frame OCR queue (like video_test_03_cv2.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Every YOLO detection â†’ crop pushed here â†’ OCR worker processes
+        # immediately â†’ votes â†’ 2 matches = confirmed serial.
         # [FIX] maxsize=10: larger buffer so serial crops are not dropped when
         # EasyOCR preprocessing takes >200 ms on Pi-class CPUs.
         # drop-oldest policy in _yolo_infer_thread prevents stale queue buildup.
-        self._ocr_crop_queue    = _queue_mod.Queue(maxsize=50)   # unlimited â keep ALL SEQ1 crops
+        self._ocr_crop_queue    = _queue_mod.Queue(maxsize=50)   # unlimited â€” keep ALL SEQ1 crops
         self._scan_start_ts_ref = [0.0]   # for elapsed calc in YOLO thread
 
-        # ââ serial.pt remains idle until the first SEQ1 activation.
+        # ── CHANGE 1: Panel session tracking (race-condition fix) ─────────
+        # _panel_session_id increments on every reset_for_new_panel().
+        # Queue items store the session_id at capture time.
+        # OCR worker discards stale items whose session_id != current.
+        self._panel_session_id  = 0      # incremented at each reset
+        self._current_panel_id  = None   # set by set_panel_folder()
+
+        # â”€â”€ serial.pt remains idle until the first SEQ1 activation.
         # We do not run YOLO on Camera-2 frames until SEQ1 begins.
         # This prevents Camera-2 from detecting serial regions before the
         # panel is actually placed and SEQ1 is active.
         self._yolo_active = False
-        print("[CAM2] â¸ï¸ YOLO idle until start_ocr() is called for SEQ1")
+        # serial.pt remains idle until the first SEQ1 activation.
+        # Queue is empty at init; no drain needed.
+        self._scan_start_ts_ref[0] = time.time()
+        print("[CAM2] __init__ -- YOLO idle until start_ocr() is called for SEQ1")
 
-        # ââ Start frame reader first, then YOLO, then OCR worker ââââââââââââ
+        # â”€â”€ Start frame reader first, then YOLO, then OCR worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         threading.Thread(target=self._main_loop,         daemon=True).start()
         # Give the reader a moment to connect and receive the first frame
         # before the YOLO thread tries to read _yolo_latest_frame.
@@ -831,8 +878,18 @@ class Camera2OCR:
         Called by app_vision.reset_panel() before each new panel arrives.
         Clears all capture slots, OCR state, serial, folder, and scan flags
         so stale data from the previous panel never bleeds into the next one.
+
+        CHANGE 2: _panel_session_id incremented here.
+        Any queue items already in flight from the old panel carry the old
+        session_id. The OCR worker checks this and discards stale items,
+        so Panel A OCR results can NEVER be written to Panel B's folder.
+        The OCR worker keeps running — no thread restart needed.
         """
         with self._lock:
+            self._panel_session_id += 1          # ← CHANGE 2: invalidate old queue items
+            self._current_panel_id  = None
+            print(f"[CAM2] reset_for_new_panel → session_id now {self._panel_session_id}",
+                  flush=True)
             self.ocr_done           = False
             self.serial_number      = None
             self.ocr_buffer         = []
@@ -854,8 +911,11 @@ class Camera2OCR:
             self._slots_saved       = [False] * self.BEST_FRAME_COUNT
             self._ocr_buffer_frames = []
             self._best_frames_saved = False
-            self._ocr_event.clear()
-            self._ocr_running       = False
+            # FIX 1a: _ocr_event.clear() removed. Worker is queue-driven;
+            # it never calls _ocr_event.wait(). Clearing here was vestigial
+            # and could race against the PaddleOCR-ready .set() in _init_paddle.
+            # TASK 3 FIX: Do NOT reset _ocr_running here. Worker thread is
+            # immortal and survives across panels. Only job-level state resets.
             self.panel_folder       = "."
             self.cam2_roi_path      = None
             self.cam2_raw_path      = None
@@ -871,13 +931,15 @@ class Camera2OCR:
             self._latest_det    = None
             self._roi_fallback  = False
 
-        # New panel â keep YOLO idle until the next SEQ1 activation.
+        # New panel -- keep YOLO idle until the next SEQ1 activation.
         self._yolo_active = False
-        while not self._ocr_crop_queue.empty():
-            try: self._ocr_crop_queue.get_nowait()
-            except: break
+        # TASK 4 FIX: Do NOT drain the queue here. Queue items carry session_id;
+        # the OCR worker discards stale session items itself. Draining the queue
+        # here was silently losing crops that arrived just before the reset --
+        # root cause of queue receives crops but OCR appears to stop afterwards.
         self._scan_start_ts_ref[0] = time.time()
-        print("[CAM2] reset_for_new_panel â â YOLO idle, queue cleared")
+        print("[CAM2] reset_for_new_panel -- YOLO idle (queue NOT cleared; "
+              "worker discards stale session items)")
 
     def start_ocr(self):
         with self._lock:
@@ -902,8 +964,10 @@ class Camera2OCR:
             self._slots_saved       = [False] * self.BEST_FRAME_COUNT
             self._ocr_buffer_frames = []
             self._best_frames_saved = False
-            self._ocr_event.clear()      # clear any pending OCR signal
-            self._ocr_running       = False
+            # FIX 1b: _ocr_event.clear() removed. Worker is queue-driven;
+            # clearing the event here was vestigial and had no effect.
+            # TASK 3 FIX: Do NOT reset _ocr_running here.
+            # Worker thread is immortal; only job state resets between panels.
             # Reset serial-appeared tracking
             self._appeared_frame1_saved = False
             self._appeared_frame1_path  = None
@@ -918,10 +982,7 @@ class Camera2OCR:
         # Activate YOLO detection for this panel
         self._yolo_active = True
         self._scan_start_ts_ref[0] = time.time()
-        # Drain any stale crops from previous panel
-        while not self._ocr_crop_queue.empty():
-            try: self._ocr_crop_queue.get_nowait()
-            except: break
+        # TASK 4 FIX: Do NOT drain queue — session_id guards stale items inside worker.
         
         # Enhanced logging for diagnostics
         detector_status = "â" if self.serial_detector is not None else "â"
@@ -961,13 +1022,12 @@ class Camera2OCR:
     def set_panel_folder(self, folder: str):
         """
         Assign the panel save folder.
-
-        FIX-SEQ1: Immediately flushes any frames that were cached while the
-        folder was not yet set (they would otherwise be silently dropped).
+        CHANGE 3: also captures _current_panel_id at this moment so
+        queue items pushed after this call carry the correct folder reference.
         """
         self.panel_folder = folder
-        if not folder or folder == '.':
-            return
+        if folder and folder != '.':
+            self._current_panel_id = folder   # ← CHANGE 3
 
         pending = getattr(self, '_pending_slot_frames', [])
         if not pending:
@@ -1594,25 +1654,34 @@ class Camera2OCR:
     #  PADDLEOCR PIPELINE  (replaces EasyOCR + preprocessing variants)
     # ════════════════════════════════════════════════════════════════
 
-    def _ocr_pipeline(self, crop) -> str:
+    def _ocr_pipeline(self, crop, _panel_folder: str = None) -> str:
         """
         Full logged PaddleOCR pipeline.
         Prints every step matching the structured log format:
           [OCR] START / [YOLO] / [OCR] Crop / Sharpness /
           Running PaddleOCR / Device / Candidate / Score /
           Corrected / Vote / FINAL SERIAL / Total OCR Time
+
+        TASK 2 / TASK 1 FIX: accepts explicit _panel_folder so that when
+        called from the OCR worker the capture-time folder is used, not
+        self.panel_folder which may have changed to the next panel.
         """
         import time as _time_mod
         from datetime import datetime as _dtp
 
         _t0 = _time_mod.time()
 
-        # ── resolve save dir ──────────────────────────────────────────
-        if self.panel_folder and self.panel_folder not in ('.', ''):
-            sd = os.path.join(self.panel_folder, "serial_captures")
+        # ── resolve save dir — prefer explicit folder passed by OCR worker ─
+        _effective_folder = (_panel_folder
+                             if (_panel_folder and _panel_folder not in ('.', ''))
+                             else self.panel_folder)
+        if _effective_folder and _effective_folder not in ('.', ''):
+            sd = os.path.join(_effective_folder, "serial_captures")
         else:
             sd = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "serial_captures")
+        print(f"[OCR] Panel Folder  : {_effective_folder}", flush=True)
+        print(f"[OCR] Saving To     : {sd}", flush=True)
         try: os.makedirs(sd, exist_ok=True)
         except Exception as e:
             print(f'[CAM2] ERROR: {e}'); import traceback; traceback.print_exc(); sd = None
@@ -1892,14 +1961,34 @@ class Camera2OCR:
             print(f"[CAM2] Folder rename failed: {e}")
             return folder
 
-    def _confirm_serial(self, serial: str):
+    def _confirm_serial(self, serial: str,
+                        panel_folder: str = None,
+                        session_id: int = None):
+        """
+        TASK 1 / TASK 7 FIX: session_id check is atomic with _panel_session_id.
+        panel_folder and session_id always come from the queue item so Panel A
+        serial can NEVER be written to Panel B folder.
+        - session_id: compared to _panel_session_id under lock; stale results
+          are discarded.
+        - panel_folder: folder active at CAPTURE time (not at confirm time).
+        """
+        # ── Validate session under lock to prevent TOCTOU race ──────────
         with self._lock:
-            if self.ocr_done: return
+            cur_session = self._panel_session_id
+            if session_id is not None and session_id != cur_session:
+                print(f"[CAM2] Serial '{serial}' DISCARDED — stale session "
+                      f"(item={session_id} current={cur_session})",
+                      flush=True)
+                return
+            if self.ocr_done:
+                return
             self.ocr_done      = True
             self.serial_number = serial
             self.status        = f"Done: {serial}"
             self._is_scanning  = False
             self.is_scanning   = False
+
+        # Lock already acquired above in the combined session+done check.
 
         print("━" * 64, flush=True)
         print(f"[CAM2] ✅ Serial CONFIRMED → {serial}", flush=True)
@@ -1907,24 +1996,53 @@ class Camera2OCR:
         print(f"[CAM2]    UI will show serial on next /api/cam2_status poll", flush=True)
         print("━" * 64, flush=True)
 
-        folder = self.panel_folder
-        if folder and folder != ".":
+        # FIX 2: Never fall back to self.panel_folder.
+        # panel_folder is the capture-time folder from the queue item and is
+        # the ONLY safe source. If it is missing/invalid, we refuse to write
+        # rather than risk writing Panel A results into Panel B folder.
+        if not panel_folder or panel_folder == ".":
+            print(
+                "[OCR] No valid capture-time folder supplied. "
+                "Refusing to write OCR result to disk.",
+                flush=True
+            )
+        else:
+            folder = panel_folder
+            print(f"[OCR] Saving serial to {folder} | session={session_id}",
+                  flush=True)   # FIX 5: saving log
             try:
                 os.makedirs(folder, exist_ok=True)
                 with open(os.path.join(folder, "serial_ocr_result.txt"),
-                          "w", encoding="utf-8") as f:
-                    f.write(f"Serial:    {serial}\n"
-                            f"Timestamp: {datetime.now().isoformat()}\n"
-                            f"Method:    serial.pt + EasyOCR "
-                            f"(2DFilter+Otsu, 3-slot)\n")
-            except Exception:
-                pass
+                          "w", encoding="utf-8") as _rf:
+                    _rf.write(f"Serial:    {serial}\n"
+                              f"Timestamp: {datetime.now().isoformat()}\n"
+                              f"Session:   {session_id}\n"
+                              f"Method:    serial.pt + PaddleOCR\n")
+                print(f"[OCR] serial_ocr_result.txt written to "
+                      f"{os.path.basename(folder)}", flush=True)
+            except Exception as _e:
+                print(f"[CAM2] result write error: {_e}", flush=True)
 
-            # rename handled solely by app_vision.py (avoids stale-path / dual-folder bug)
 
-        if self.on_serial_detected:
-            try: self.on_serial_detected(serial)
+
+        # FIX 3: re-validate session before firing the callback.
+        # Between the lock release above and here, reset_for_new_panel()
+        # may have incremented _panel_session_id. Firing the callback with
+        # stale session data would update Panel B state with Panel A results.
+        with self._lock:
+            _cb_ok = (session_id is None or
+                      session_id == self._panel_session_id)
+        if not _cb_ok:
+            print(
+                f"[CAM2] Callback skipped — stale session "
+                f"(item={session_id} current={self._panel_session_id})",
+                flush=True
+            )
+        elif self.on_serial_detected:
+            try:
+                self.on_serial_detected(serial)
             except Exception as e:
+                print(f"[CAM2] Callback error: {e}")
                 print(f"[CAM2] Callback error: {e}")
 
     # âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
@@ -2024,8 +2142,23 @@ class Camera2OCR:
                     try:
                         if self._ocr_crop_queue.full():
                             self._ocr_crop_queue.get_nowait()
-                        self._ocr_crop_queue.put_nowait((crop.copy(), frame.copy(), x1, y1, x2, y2, elapsed))
-                        print(f"[CAM2] Crop queued Queue={self._ocr_crop_queue.qsize()}", flush=True)
+                        # CHANGE 4: item is a dict — carries panel context
+                        # so OCR worker always uses the folder/session that
+                        # was active at CAPTURE time, not at RECEIVE time.
+                        _item = {
+                            'crop':          crop.copy(),
+                            'frame':         frame.copy(),
+                            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+                            'elapsed':       elapsed,
+                            'panel_id':      self._current_panel_id,
+                            'panel_folder':  self.panel_folder,
+                            'session_id':    self._panel_session_id,
+                            'capture_ts':    time.time(),
+                        }
+                        self._ocr_crop_queue.put_nowait(_item)
+                        print(f"[CAM2] Crop queued  session={self._panel_session_id}"
+                              f"  folder={os.path.basename(self.panel_folder or '?')}"
+                              f"  Queue={self._ocr_crop_queue.qsize()}", flush=True)
                     except Exception as e:
                         print(f"[CAM2-YOLO] Queue push error: {e}")
                 elif detected and crop is not None and not self._is_scanning:
@@ -2189,8 +2322,10 @@ class Camera2OCR:
                     filled = sum(self._slots_saved)
                     print(f"[CAM2]    Slots: {self._slots_saved}")
                     print(f"[CAM2]    Queue size: {self._ocr_crop_queue.qsize()}")
-                    self._ocr_event.set()   # wake the OCR worker thread
-                    print(f"[CAM2] â EasyOCR signal sent\n")
+                    # FIX 1c: _ocr_event.set() removed. Worker is queue-driven.
+                    # Crop was already placed in _ocr_crop_queue by
+                    # _yolo_infer_thread; no event signal needed.
+                    print(f"[CAM2] OCR queue size after slot fill: {self._ocr_crop_queue.qsize()}")
 
                 time.sleep(0.005)   # 200fps cap (was 0.02/50fps) â _raw_frame now
                                     # updates every 5ms â UI gets fresher frames
@@ -2206,158 +2341,255 @@ class Camera2OCR:
 
     def _ocr_worker(self):
         """
-        Minimal OCR worker — no events, no gating, pure queue.get() → predict().
-        All exceptions printed with full traceback.
+        TASK 2 FIX: Immortal OCR worker.
+        - Starts exactly once at __init__ and NEVER exits (except self.running=False).
+        - Outer while-True wraps everything so an unhandled exception restarts the loop.
+        - Every queue.get() is paired with queue.task_done().
+        - Every exception is printed with full traceback.
+        - Worker thread NEVER uses self.panel_folder for saving; it always uses
+          item["panel_folder"] from the queue item (TASK 1 safety).
         """
         import time as _t
         import traceback as _tb
 
-        print("[CAM2-OCR] OCR Worker Started", flush=True)
+        print(
+            f"[OCR] Worker started | "
+            f"session={self._panel_session_id} | "
+            f"queue_size={self._ocr_crop_queue.qsize()}",
+            flush=True
+        )   # FIX 5a: startup diagnostic
         print(f"[CAM2-OCR] Worker thread id={id(self)}", flush=True)
 
-        # ── Wait for PaddleOCR to finish loading ──────────────────────────
-        _t0 = _t.time()
-        _last = _t0
-        while self.running:
-            if self.paddle_reader is not None:
-                break
-            now = _t.time()
-            if now - _last >= 3.0:
-                print(f"[CAM2-OCR] ⏳ Waiting for PaddleOCR "
-                      f"{now-_t0:.0f}s  "
-                      f"queue={self._ocr_crop_queue.qsize()}",
-                      flush=True)
-                _last = now
-            _t.sleep(0.1)
-
-        if not self.running:
-            print("[CAM2-OCR] Worker stopped before PaddleOCR ready", flush=True)
-            return
-
-        if self.paddle_reader is None:
-            print("[CAM2-OCR] ❌ paddle_reader is None — worker exits", flush=True)
-            return
-
-        print(f"[CAM2-OCR] ✅ PaddleOCR ready  "
-              f"reader={type(self.paddle_reader).__name__}  "
-              f"queue={self._ocr_crop_queue.qsize()} crops waiting",
-              flush=True)
-
-        _frame = 0
-
-        # ── Main loop ─────────────────────────────────────────────────────
+        # ── TASK 2: outer immortal loop — worker NEVER exits silently ─────────
         while self.running:
             try:
-                # 1. Log queue state before blocking
-                print(f"[CAM2-OCR] Waiting for queue item. "
-                      f"Queue={self._ocr_crop_queue.qsize()}",
+
+                # ── Wait for PaddleOCR to finish loading ─────────────────────
+                _t0   = _t.time()
+                _last = _t0
+                while self.running:
+                    if self.paddle_reader is not None:
+                        break
+                    now = _t.time()
+                    if now - _last >= 3.0:
+                        print(f"[CAM2-OCR] ⏳ Waiting for PaddleOCR "
+                              f"{now-_t0:.0f}s  "
+                              f"queue={self._ocr_crop_queue.qsize()}",
+                              flush=True)
+                        _last = now
+                    _t.sleep(0.1)
+
+                if not self.running:
+                    print("[CAM2-OCR] Worker stopped before PaddleOCR ready",
+                          flush=True)
+                    break   # exit outer try block — outer while loop exits cleanly
+
+                if self.paddle_reader is None:
+                    # This can happen if PaddleOCR init failed completely.
+                    # break back to outer while so it re-waits for paddle_reader.
+                    print("[CAM2-OCR] paddle_reader is None after wait — "
+                          "retrying outer loop in 5s",
+                          flush=True)
+                    _t.sleep(5.0)
+                    break   # re-enter outer while — will re-wait for paddle_reader
+
+                print(f"[CAM2-OCR] ✅ PaddleOCR ready  "
+                      f"reader={type(self.paddle_reader).__name__}  "
+                      f"queue={self._ocr_crop_queue.qsize()} crops waiting",
                       flush=True)
 
-                # 2. Block until a crop arrives (1s timeout to check running)
-                try:
-                    crop, frame, x1, y1, x2, y2, elapsed =                         self._ocr_crop_queue.get(timeout=1)
-                except _queue_mod.Empty:
-                    continue
+                _frame = 0
 
-                print(f"[CAM2-OCR] Queue item received. "
-                      f"Queue={self._ocr_crop_queue.qsize()}",
+                # ── Inner processing loop ─────────────────────────────────────
+                while self.running:
+                    _raw = None
+                    try:
+                        # 1. Log queue state before blocking
+                        print(f"[CAM2-OCR] Waiting for queue item. "
+                              f"Queue={self._ocr_crop_queue.qsize()}",
+                              flush=True)
+
+                        # 2. Block until a crop arrives (1s timeout to check running)
+                        try:
+                            _raw = self._ocr_crop_queue.get(timeout=1)
+                        except _queue_mod.Empty:
+                            continue
+
+                        # TASK 1 / FINAL AUDIT FIX: unpack dict — always use
+                        # item["panel_folder"], NEVER self.panel_folder.
+                        # Fallback is '.' (safe no-op) not self.panel_folder
+                        # (which may already point at Panel B by the time this
+                        # item is processed).
+                        if isinstance(_raw, dict):
+                            crop            = _raw['crop']
+                            frame           = _raw['frame']
+                            x1, y1          = _raw['x1'], _raw['y1']
+                            x2, y2          = _raw['x2'], _raw['y2']
+                            elapsed         = _raw['elapsed']
+                            item_session    = _raw.get('session_id',   self._panel_session_id)
+                            # SAFE FALLBACK: use '.' not self.panel_folder
+                            item_folder     = _raw.get('panel_folder') or '.'
+                            item_panel_id   = _raw.get('panel_id',     None)
+                            item_capture_ts = _raw.get('capture_ts',   0.0)
+                        else:
+                            # Legacy tuple fallback — no folder context available.
+                            # Use '.' (safe no-op save) rather than self.panel_folder
+                            # which may now be Panel B's folder.
+                            crop, frame, x1, y1, x2, y2, elapsed = _raw
+                            item_session    = self._panel_session_id
+                            item_folder     = '.'   # SAFE: never self.panel_folder
+                            item_panel_id   = None
+                            item_capture_ts = 0.0
+
+                        cur_session = self._panel_session_id
+
+                        # FIX 5b: compact per-item diagnostic
+                        print(
+                            f"[OCR] Processing crop | "
+                            f"session={item_session} | "
+                            f"panel={item_panel_id}",
+                            flush=True
+                        )
+                        print(f"[OCR] Queue Session   = {item_session}", flush=True)
+                        print(f"[OCR] Current Session = {cur_session}",  flush=True)
+                        print(f"[OCR] Panel Folder    = {item_folder}",  flush=True)
+
+                        # 3. Skip if already confirmed
+                        if self.ocr_done:
+                            print("[CAM2-OCR] ocr_done=True — skip", flush=True)
+                            self._ocr_crop_queue.task_done()   # TASK 2: always task_done
+                            continue
+
+                        # TASK 1 / TASK 4: Discard stale items from old panel
+                        if item_session != cur_session:
+                            print(f"[OCR] STALE ITEM DISCARDED  "
+                                  f"item_session={item_session}  "
+                                  f"current={cur_session}", flush=True)
+                            self._ocr_crop_queue.task_done()   # TASK 2: always task_done
+                            continue
+
+                        # 5. Resize 2x
+                        _frame += 1
+                        ch, cw = crop.shape[:2]
+                        import cv2 as _cv2
+                        ocr_input = _cv2.resize(crop, (cw * 2, ch * 2),
+                                                interpolation=_cv2.INTER_CUBIC)
+
+                        # 6. Call PaddleOCR
+                        print("[CAM2-OCR] Calling PaddleOCR", flush=True)
+                        print(f"[CAM2-OCR] Input size={ocr_input.shape[1]}x"
+                              f"{ocr_input.shape[0]}", flush=True)
+
+                        result = self.paddle_reader.predict(ocr_input)
+
+                        print("[CAM2-OCR] PaddleOCR returned", flush=True)
+                        print(f"[CAM2-OCR] Raw OCR Result = {result}", flush=True)
+
+                        # 7. Extract text
+                        raw_text = ''
+                        if result:
+                            _item = result[0] if isinstance(result, list) else result
+                            if isinstance(_item, dict):
+                                texts  = _item.get('rec_texts',  [])
+                                scores = _item.get('rec_scores', [])
+                                if isinstance(texts, str):
+                                    texts  = [texts]
+                                    scores = [scores] if not isinstance(scores, list) else scores
+                                raw_text = ''.join(
+                                    str(t) for t, s in zip(texts, scores)
+                                    if float(s) >= 0.25)
+
+                        print(f"[CAM2-OCR] Extracted text = {repr(raw_text)}",
+                              flush=True)
+
+                        # 8. Validate
+                        serial = _correct_serial(raw_text) if raw_text else None
+
+                        # TASK 6: detailed voting log
+                        if raw_text:
+                            print(f"[OCR] Candidate    = {repr(raw_text)}", flush=True)
+                        if serial:
+                            print(f"[OCR] Corrected    = {serial}", flush=True)
+                        else:
+                            reason = ("empty text" if not raw_text
+                                      else f"validation failed for {repr(raw_text)}")
+                            print(f"[OCR] Rejected Reason = {reason}", flush=True)
+
+                        if not serial:
+                            self._ocr_crop_queue.task_done()   # TASK 2: always task_done
+                            continue
+
+                        # 9. Vote
+                        self.partial_serial = serial
+                        day    = serial[0:2]
+                        code   = serial[6:9]
+                        letter = serial[9]
+
+                        if self.day_confirmed    is None: self.day_votes[day]    += 1
+                        if self.code_confirmed   is None: self.code_votes[code]  += 1
+                        if self.letter_confirmed is None: self.letter_votes[letter] += 1
+
+                        d  = self.day_votes[day]       if self.day_confirmed    is None else 0
+                        c  = self.code_votes[code]     if self.code_confirmed   is None else 0
+                        lv = self.letter_votes[letter] if self.letter_confirmed is None else 0
+                        CV = 2
+
+                        # TASK 6: Vote Count log
+                        print(f"[OCR] Vote Count   day='{day}'({d}/{CV}) "
+                              f"code='{code}'({c}/{CV}) "
+                              f"letter='{letter}'({lv}/{CV})", flush=True)
+
+                        if d  >= CV and self.day_confirmed    is None:
+                            self.day_confirmed = day
+                            print(f"[CAM2-OCR] ⭐ DAY FROZEN='{day}'", flush=True)
+                        if c  >= CV and self.code_confirmed   is None:
+                            self.code_confirmed = code
+                            print(f"[CAM2-OCR] ⭐ CODE FROZEN='{code}'", flush=True)
+                        if lv >= CV and self.letter_confirmed is None:
+                            self.letter_confirmed = letter
+                            print(f"[CAM2-OCR] ⭐ LETTER FROZEN='{letter}'", flush=True)
+
+                        if (self.day_confirmed    is not None
+                                and self.code_confirmed   is not None
+                                and self.letter_confirmed is not None):
+                            from datetime import datetime as _dtc
+                            _n = _dtc.now()
+                            final = (self.day_confirmed
+                                     + f"{_n.month:02d}{_n.year%100:02d}"
+                                     + self.code_confirmed
+                                     + self.letter_confirmed)
+                            print(f"[CAM2-OCR] SERIAL CONFIRMED = {final}",
+                                  flush=True)
+                            # TASK 1: always pass item_folder + item_session —
+                            # NEVER self.panel_folder — to prevent Panel A→B leak.
+                            self._ocr_crop_queue.task_done()   # TASK 2: task_done before confirm
+                            self._confirm_serial(final,
+                                                 panel_folder=item_folder,
+                                                 session_id=item_session)
+                            continue   # task_done already called above
+
+                        # TASK 2: task_done for every path that reaches here
+                        self._ocr_crop_queue.task_done()
+
+                    except Exception as _inner_e:
+                        # TASK 2: always call task_done even on exception
+                        if _raw is not None:
+                            try:
+                                self._ocr_crop_queue.task_done()
+                            except Exception:
+                                pass
+                        print(f"[OCR WORKER ERROR] {_inner_e}", flush=True)
+                        _tb.print_exc()
+                        _t.sleep(0.1)   # brief pause before retry
+
+            except Exception as _outer_e:
+                # TASK 2: outer catch — worker NEVER silently dies
+                print(f"[OCR WORKER ERROR] Outer loop exception: {_outer_e}",
                       flush=True)
-
-                # 3. Skip if already confirmed
-                if self.ocr_done:
-                    print("[CAM2-OCR] ocr_done=True — skip", flush=True)
-                    continue
-
-                # 4. Skip if scanning stopped
-                if not self._is_scanning:
-                    print("[CAM2-OCR] _is_scanning=False — skip", flush=True)
-                    continue
-
-                # 5. Resize 2x (same as SerDet_PaddleOcr_02.py)
-                _frame += 1
-                ch, cw = crop.shape[:2]
-                import cv2
-                ocr_input = cv2.resize(crop, (cw * 2, ch * 2),
-                                       interpolation=cv2.INTER_CUBIC)
-
-                # 6. Call PaddleOCR
-                print("[CAM2-OCR] Calling PaddleOCR", flush=True)
-                print(f"[CAM2-OCR] Input size={ocr_input.shape[1]}x"
-                      f"{ocr_input.shape[0]}", flush=True)
-
-                result = self.paddle_reader.predict(ocr_input)
-
-                print("[CAM2-OCR] PaddleOCR returned", flush=True)
-                print(f"[CAM2-OCR] Raw OCR Result = {result}", flush=True)
-
-                # 7. Extract text
-                raw_text = ''
-                if result:
-                    item = result[0] if isinstance(result, list) else result
-                    if isinstance(item, dict):
-                        texts  = item.get('rec_texts',  [])
-                        scores = item.get('rec_scores', [])
-                        if isinstance(texts, str):
-                            texts  = [texts]
-                            scores = [scores] if not isinstance(scores,list) else scores
-                        raw_text = ''.join(
-                            str(t) for t, s in zip(texts, scores)
-                            if float(s) >= 0.25)
-
-                print(f"[CAM2-OCR] Extracted text = {repr(raw_text)}", flush=True)
-
-                # 8. Validate
-                serial = _correct_serial(raw_text) if raw_text else None
-                print(f"[CAM2-OCR] Corrected Serial = {serial}", flush=True)
-
-                if not serial:
-                    continue
-
-                # 9. Vote
-                self.partial_serial = serial
-                day    = serial[0:2]
-                code   = serial[6:9]
-                letter = serial[9]
-
-                if self.day_confirmed    is None: self.day_votes[day]    += 1
-                if self.code_confirmed   is None: self.code_votes[code]  += 1
-                if self.letter_confirmed is None: self.letter_votes[letter] += 1
-
-                d = self.day_votes[day]    if self.day_confirmed    is None else 0
-                c = self.code_votes[code]  if self.code_confirmed   is None else 0
-                l = self.letter_votes[letter] if self.letter_confirmed is None else 0
-                CV = 2
-
-                print(f"[CAM2-OCR] Vote day='{day}'({d}/{CV}) "
-                      f"code='{code}'({c}/{CV}) "
-                      f"letter='{letter}'({l}/{CV})", flush=True)
-
-                if d >= CV and self.day_confirmed    is None:
-                    self.day_confirmed = day
-                    print(f"[CAM2-OCR] ⭐ DAY FROZEN='{day}'", flush=True)
-                if c >= CV and self.code_confirmed   is None:
-                    self.code_confirmed = code
-                    print(f"[CAM2-OCR] ⭐ CODE FROZEN='{code}'", flush=True)
-                if l >= CV and self.letter_confirmed is None:
-                    self.letter_confirmed = letter
-                    print(f"[CAM2-OCR] ⭐ LETTER FROZEN='{letter}'", flush=True)
-
-                if (self.day_confirmed    is not None
-                        and self.code_confirmed   is not None
-                        and self.letter_confirmed is not None):
-                    from datetime import datetime as _dtc
-                    _n = _dtc.now()
-                    final = (self.day_confirmed
-                             + f"{_n.month:02d}{_n.year%100:02d}"
-                             + self.code_confirmed
-                             + self.letter_confirmed)
-                    print(f"[CAM2-OCR] SERIAL CONFIRMED = {final}", flush=True)
-                    self._confirm_serial(final)
-
-            except Exception as _e:
-                print(f"[CAM2-OCR] ❌ Exception: {_e}", flush=True)
                 _tb.print_exc()
-                _t.sleep(0.1)   # brief pause before retry
+                _t.sleep(1.0)   # wait before re-entering outer loop
+
+        print("[CAM2-OCR] Worker thread exiting (self.running=False)", flush=True)
 
 
     def _basic_quality_ok(self, gray):
