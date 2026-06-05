@@ -493,8 +493,19 @@ class _FFmpegCapture:
         return f"{m.group(1)}127.0.0.1:{self.PROXY_PORT}{m.group(2)}" if m else url
 
     def _loop(self):
-        # Pure software H264 decode â reliable, correct BGR24 output.
-        cmd = ['ffmpeg', '-y', '-loglevel', 'warning',
+        # FIX 1: Use FFMPEG_BIN not hardcoded 'ffmpeg'
+        # FIX 2: Add -stimeout 5000000 (unblocks readinto after 5s silence)
+        # FIX 3: Add -reconnect flags (auto-recovery)
+        # FIX 4: Remove select.select() — broken on Windows pipes
+        #        (Windows select only works on sockets, not pipes)
+        #        Rely on -stimeout to terminate readinto() instead.
+        _ffmpeg = FFMPEG_BIN if FFMPEG_BIN else 'ffmpeg'
+        cmd = [_ffmpeg,
+               '-reconnect',          '1',
+               '-reconnect_streamed', '1',
+               '-reconnect_delay_max','2',
+               '-stimeout',           '5000000',
+               '-y', '-loglevel', 'warning',
                '-rtsp_transport', 'tcp',
                '-fflags',  'nobuffer+discardcorrupt',
                '-flags',   'low_delay',
@@ -502,7 +513,6 @@ class _FFmpegCapture:
                '-vf',      f'scale={self.width}:{self.height},format=bgr24',
                '-vcodec',  'rawvideo',
                '-f',       'rawvideo',
-               # 10 fps â fresher than original 5 fps, safe for sequential read
                '-r',       '10',
                '-vsync',   '0',
                '-an', '-sn', '-dn', 'pipe:1']
@@ -529,16 +539,8 @@ class _FFmpegCapture:
                         pass
                 _thr.Thread(target=_drain_err, args=(proc,), daemon=True).start()
 
+                failures = 0
                 while self.running:
-                    rdy, _, _ = select.select([proc.stdout], [], [], 3.0)
-                    if not rdy:
-                        print('[CAM2] â ï¸  frame read timeout â reconnecting')
-                        break
-
-                    # Read exactly one full frame â sequential, never partial
-                    # DO NOT use non-blocking drain here: partial reads desync
-                    # frame boundaries and corrupt the image (pixels from two
-                    # frames get mixed â looks like blur).
                     n = 0
                     try:
                         while n < self.frame_size:
@@ -547,13 +549,22 @@ class _FFmpegCapture:
                                 break
                             n += got
                     except Exception:
-                        break
+                        failures += 1
+                        n = 0
 
-                    if n == self.frame_size:
-                        frm = np.frombuffer(_buf, dtype=np.uint8).reshape(
-                            (self.height, self.width, 3)).copy()
-                        with self._lock:
-                            self._latest = frm  # replace immediately
+                    if n != self.frame_size:
+                        failures += 1
+                        if failures >= 10:
+                            print(f'[CAM2] {failures} bad frames — reconnecting')
+                            break
+                        time.sleep(0.01)
+                        continue
+
+                    failures = 0
+                    frm = np.frombuffer(_buf, dtype=np.uint8).reshape(
+                        (self.height, self.width, 3)).copy()
+                    with self._lock:
+                        self._latest = frm
 
                 proc.kill()
             except Exception as e:
