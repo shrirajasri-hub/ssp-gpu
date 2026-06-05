@@ -164,14 +164,6 @@ from collections import deque
 from flask import Flask, render_template, Response, jsonify, request
 from flask_cors import CORS
 from pdf_generator import generate_pdf_report
-try:
-    from panel_logger import get_logger as _get_panel_logger
-    _PANEL_LOGGER_OK = True
-except ImportError:
-    _PANEL_LOGGER_OK = False
-    class _FakePLog:
-        def __getattr__(self, n): return lambda *a, **k: None
-    _get_panel_logger = _FakePLog
 # import pytesseract  # Removed: Migrated to EasyOCR for memory efficiency on Pi
 
 # Camera-2 OCR module (standalone — no Camera-1 dependency)
@@ -200,12 +192,12 @@ app.config['MAX_CONTENT_LENGTH'] = None
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION & PERFORMANCE
 # ─────────────────────────────────────────────────────────────
-MAX_PROC_WIDTH      = 320     # Lowered to 320 for maximum CPU speed (reduced lag)
+MAX_PROC_WIDTH      = 640     # FIX 4: 320→640 for Windows GPU (better detection)
 FRAME_SKIP          = 2       # Process every 3rd frame
-JPEG_QUALITY        = 40      # Fast encode
+JPEG_QUALITY        = 65      # FIX 4: 40→65 for Windows GPU (better quality)
 OCR_THROTTLE_FRAMES = 20      # OCR every 20 frames only
-STREAM_FPS_CAP      = 12      # Reduced to 12 FPS for smoother performance on Pi
-STREAM_UI_WIDTH      = 960     # Reduced from 1280 to 960 to save CPU during JPEG encoding
+STREAM_FPS_CAP      = 20      # FIX 4: 12→20 fps for Windows GPU (smoother)
+STREAM_UI_WIDTH      = 1280    # FIX 4: 960→1280 for Windows GPU (sharper UI)
 
 # ── Wiping completion — time-based ───────────────────────────
 # How many seconds of continuous wiping = sequence complete
@@ -265,9 +257,6 @@ TEMP_DIR       = os.path.join(SCRIPT_DIR, "temp_frames")
 
 for d in (MODELS_DIR, BASE_STORAGE, os.path.join(BASE_STORAGE, '_uploads'), TEMP_DIR):
     os.makedirs(d, exist_ok=True)
-_plog = _get_panel_logger()
-if _PANEL_LOGGER_OK:
-    _plog.init(BASE_STORAGE)
 
 
 
@@ -679,7 +668,6 @@ class PanelDetectionState:
         self.last_wiping_time    = None
         self.current_sequence_panel_name = None
         self.current_sequence_panel_folder = None
-        self.panel_id            = None
         self.model_sees          = 'NONE'
         # Reset Camera-2 OCR flags for new panel
         self.ocr_started          = False
@@ -996,7 +984,7 @@ def ensure_panel_folder():
     # so callers skip rather than creating a premature folder.
     # Require an actual SEQ1 snapshot before allocating the panel session.
     if not state.panel_id:
-        if state.current_sequence < 1:
+        if state.current_sequence == 0 or state.seq1_snapshot_data is None:
             return state.current_sequence_panel_folder
         state.panel_id = datetime.now().strftime("%H%M%S")
 
@@ -1013,12 +1001,10 @@ def allocate_panel_folder_for_seq1(serial_present=False):
 
     if (state.seq1_detection_count >= 2
             and state.current_sequence in (0, 1)):
-        if not state.panel_id:
-            state.panel_id = datetime.now().strftime("%H%M%S")
+        state.panel_id = datetime.now().strftime("%H%M%S")
         state.current_sequence_panel_folder = get_panel_folder(
             state.serial_number or 'SSP-SEQ', state.panel_id)
-        _plog.panel_start(state.panel_id, state.current_sequence_panel_folder)
-        print(f"[SEQ1-FOLDER] ✅ Panel folder: {state.current_sequence_panel_folder}")
+        print(f"[SEQ1-FOLDER] ✅ Panel folder created (EARLY - 2 stable frames)")
         print(f"[SEQ1-FOLDER]    Path: {state.current_sequence_panel_folder}")
         print(f"[SEQ1-FOLDER]    Panel ID: {state.panel_id}")
         print(f"[SEQ1-FOLDER]    Detection count: {state.seq1_detection_count}")
@@ -1218,7 +1204,6 @@ def capture_sequence_images(cap_data, sequence_id, serial_number):
                 size_kb = os.path.getsize(full_path) // 1024
                 print(f"  ✅ SEQ{sequence_id} FullFrame: {os.path.basename(full_path)}"
                       f"  ({fw}×{fh}, {size_kb} KB, sharpness={sharpness:.0f})")
-                _plog.image_saved(f"SEQ{sequence_id}_Full", full_path, f"{fw}×{fh} {size_kb}KB")
             else:
                 print(f"  ❌ SEQ{sequence_id} full-frame save FAILED")
                 return None
@@ -1231,7 +1216,6 @@ def capture_sequence_images(cap_data, sequence_id, serial_number):
             size_kb = os.path.getsize(full_path) // 1024
             print(f"  ✅ SEQ{sequence_id} Full: {os.path.basename(full_path)}"
                   f"  ({fw}×{fh}, {size_kb} KB, sharpness={sharpness:.0f})")
-            _plog.image_saved(f"SEQ{sequence_id}_Full", full_path, f"{fw}×{fh} {size_kb}KB")
         else:
             print(f"  ❌ SEQ{sequence_id} Full save FAILED")
             return None
@@ -1408,14 +1392,11 @@ def _finalize_panel():
     panel_start = state.panel_start_time or state.panel_end_time
     total_secs  = state.panel_end_time - panel_start
 
-    for _si in (1, 2, 3):
-        if not state.seq_start_time.get(_si) and state.seq_end_time.get(_si):
-            state.seq_start_time[_si] = panel_start
     seq_times = {}
     for i in (1, 2, 3):
         s = state.seq_start_time.get(i)
         e = state.seq_end_time.get(i)
-        if s and e and e >= s:
+        if s and e:
             seq_times[i] = round(e - s, 1)
         else:
             seq_times[i] = None
@@ -1540,11 +1521,6 @@ def _finalize_panel():
             )
             if pdf_path:
                 print(f"[DEBUG PDF] ✅ PDF generated successfully at: {pdf_path}")
-                _plog.pdf_complete(pdf_path, pages=6)
-                _plog.panel_end(final_serial or "UNKNOWN", "SUCCESS",
-                                images_saved=sum(1 for k in (1,2,3)
-                                                 if state.sequence_captured.get(k)),
-                                pdf_path=pdf_path)
             else:
                 print("[DEBUG PDF] ⚠️  PDF generation returned None")
                 state.failure_reason = "PDF Generation Failed: Missing images"
@@ -1891,7 +1867,6 @@ def complete(seq):
                                            else getattr(state, 'seq3_best_meta', None)) or {})
                 if result:
                     if seq == 2: state.seq2_auto_captured = True
-                    if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                     else:        state.seq3_auto_captured = True
             else:
                 # Priority 2: last hand-free clean frame (landscape only)
@@ -1905,7 +1880,6 @@ def complete(seq):
                         result = capture(seq, fb)
                         if result:
                             if seq == 2: state.seq2_auto_captured = True
-                            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                             else:        state.seq3_auto_captured = True
                     else:
                         print(f"[CAPTURE] SEQ{seq}: ⚠️ last clean frame is portrait ({fw}×{fh}) — skipped")
@@ -2051,7 +2025,6 @@ def update_seq(new_seq):
                           f'(best_sharp={state.seq2_best_sharp:.0f})')
                     capture(2, _bf2, metadata=state.seq2_best_meta or {})
                     state.seq2_auto_captured = True
-                    if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                 else:
                     # No landscape frame yet — use last clean hand-free frame
                     _fb = (state.last_clean if state.last_clean is not None
@@ -2062,7 +2035,6 @@ def update_seq(new_seq):
                             print('[SEQ2] ⚡ Force-capturing SEQ2 using last clean frame')
                             capture(2, _fb)
                             state.seq2_auto_captured = True
-                            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                         else:
                             print('[SEQ2] ⚠️ No landscape frame available for SEQ2 force-capture')
                     else:
@@ -2247,7 +2219,6 @@ def update_wiping(hand_present, motion):
                     if fb is not None:
                         capture(2, fb, metadata=state.seq2_best_meta or {})
                         state.seq2_auto_captured = True
-                        if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                         state.seq_capture_data[2] = fb
                     else:
                         print("[SEQ2] ⚠️ 100% wipe but NO horizontal frame tracked — "
@@ -2606,7 +2577,7 @@ def process_frame(frame, detections):
                        and d['confidence'] >= 0.5]
     serial_candidates = [d for d in detections
                          if d['name'] in ('serial_number', 'serial_number_region')
-                         and d['confidence'] >= 0.15]
+                         and d['confidence'] >= 0.3]
 
     # ── 2. Select BEST panel detection — TWO-TRACK logic ───────────
     #
@@ -2723,10 +2694,9 @@ def process_frame(frame, detections):
 
             # Only commit snapshot when ALL stability checks pass
             if panel_is_stable:
-                _commit = serial_det is not None or state.seq1_detection_count >= 8
-                if not _commit:
-                    print(f"[SEQ1] waiting serial_number ({state.seq1_detection_count}/8)")
-                if _commit and state.seq1_snapshot_data is None:
+                if serial_det is None:
+                    print("[SEQ1] Waiting for serial_number class before committing snapshot")
+                else:
                     state.seq1_snapshot_data = {
                         'frame':      frame.copy(),
                         'rect':       current_rect,
@@ -2734,9 +2704,10 @@ def process_frame(frame, detections):
                         'serial_det': serial_det,
                     }
                     state.seq1_first_clean_frame = state.seq1_snapshot_data['frame']
-                    allocate_panel_folder_for_seq1()
-                    print(f"[SEQ1] ✅ Snapshot committed f={state.seq1_detection_count} "
-                          f"serial_det={serial_det is not None} sharp={frame_sharp:.0f}")
+                    # [NEW] Trigger folder creation exactly at snapshot moment
+                    ensure_panel_folder()
+                    print(f"[SEQ1] ✅ Snapshot taken and Folder Created at frame {state.seq1_detection_count} "
+                          f"— sharpness={frame_sharp:.0f}")
 
         # EARLY FOLDER CREATION: allocate the panel folder as soon as
         # SEQ1 is stable for 2 frames and serial_number is detected.
@@ -2943,7 +2914,6 @@ def process_frame(frame, detections):
                             # ✅ FIX #3: Explicitly capture SEQ2 image
                             capture(2, best_f, metadata=state.seq2_best_meta)
                             state.seq2_auto_captured = True
-                            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                             state.seq_capture_data[2] = best_f
                             print(f"[CAPTURE] SEQ2 image saved → UI will show green 'captured' banner")
                             print(f"[CAPTURE] seq2_auto_captured={state.seq2_auto_captured} "
@@ -2981,7 +2951,6 @@ def process_frame(frame, detections):
             print("[CAPTURE] SEQ2 FALLBACK — using tracked horizontal frame")
             capture(2, fb, metadata=state.seq2_best_meta or {})
             state.seq2_auto_captured = True
-            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
             state.seq_capture_data[2] = fb
         else:
             print("[CAPTURE] SEQ2 FALLBACK ⚠️ no frame tracked — "
@@ -3043,7 +3012,6 @@ def process_frame(frame, detections):
                       f"(conf={_cross_conf:.2f} sharp={_c_sharp:.0f})")
                 capture(2, frame.copy(), metadata=meta)
                 state.seq2_auto_captured = True
-                if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                 state.seq_capture_data[2] = frame.copy()
 
     # ── SEQ2 hand-presence fallback ───────────────────────────────────────────
@@ -3060,7 +3028,6 @@ def process_frame(frame, detections):
             print("[CAPTURE] SEQ2 HAND FALLBACK — using tracked horizontal frame")
             capture(2, fb, metadata=state.seq2_best_meta or {})
             state.seq2_auto_captured = True
-            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
             state.seq_capture_data[2] = fb
         else:
             print("[CAPTURE] SEQ2 HAND FALLBACK ⚠️ hand present but no landscape frame tracked — skipping"
@@ -3078,7 +3045,6 @@ def process_frame(frame, detections):
                   f"(sharp={state.seq2_best_sharp:.0f})")
             capture(2, fb, metadata=state.seq2_best_meta or {})
             state.seq2_auto_captured = True
-            if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
             state.seq_capture_data[2] = fb
         else:
             print("[CAPTURE] SEQ2 TIMEOUT ⚠️ 20+ frames but NO landscape frame — "
@@ -3194,7 +3160,6 @@ def process_frame(frame, detections):
                                       'saving SEQ2 from best tracked landscape frame')
                                 capture(2, _bf2, metadata=state.seq2_best_meta or {})
                                 state.seq2_auto_captured = True
-                                if not state.seq_end_time.get(2): state.seq_end_time[2] = time.time()
                             else:
                                 print('[SEQ3] ⚠️ SEQ3 ready but SEQ2 has no landscape frame — '
                                       'SEQ2 image will be missing in PDF')
@@ -3509,14 +3474,13 @@ def process_frame(frame, detections):
 
             if (old_path and os.path.exists(old_path)
                     and serial and serial not in ('UNKNOWN', 'Reading...')):
-                _tgt = f"{serial}_{state.panel_id}" if state.panel_id else serial
-                if os.path.basename(old_path) != _tgt:
-                    new_path = os.path.join(os.path.dirname(old_path), _tgt)
+                # Only rename if serial differs from current folder name
+                if os.path.basename(old_path) != serial:
+                    new_path = os.path.join(os.path.dirname(old_path), serial)
                     if not os.path.exists(new_path):
                         os.rename(old_path, new_path)
                         state.current_sequence_panel_folder = new_path
-                        _plog.folder_renamed(old_path, new_path)
-                        print(f"[FOLDER] ✅ Renamed → {os.path.basename(new_path)}")
+                        print(f"[FOLDER] Renamed → {new_path}")
                     else:
                         state.current_sequence_panel_folder = new_path
 
@@ -3707,9 +3671,8 @@ def _stream(cap, native_fps=None):
         fails = 0
         last_ok = time.time()
         last_read_time = time.time()
-        # FIX C2: 8 s -> 15 s - TLS-RTSP reconnect on Pi takes up to 12 s;
-        # 8 s caused a reconnect storm that saturated the Pi CPU.
-        STALE_TIMEOUT = 15.0
+        # FIX 2: 8s — safe with -stimeout 5s (stream recovers in ~6s)
+        STALE_TIMEOUT = 8.0
 
         while running.is_set() and state.stream_generation == my_generation:
             # ── Playback Throttling (for video files) ──────────────────
@@ -4797,10 +4760,17 @@ class FFmpegVideoCapture:
             return
 
         cmd_base = [FFMPEG_BIN,
-                    '-thread_queue_size', '64',
-                    '-fflags',            'nobuffer',
-                    '-flags',             'low_delay',
-                    '-rtsp_transport',    'tcp']
+                    # FIX 1: reconnect + 5s socket timeout
+                    # -stimeout prevents readinto() blocking forever
+                    # -reconnect lets FFmpeg self-recover on drops
+                    '-reconnect',          '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max','2',
+                    '-stimeout',           '5000000',
+                    '-thread_queue_size',  '64',
+                    '-fflags',             'nobuffer',
+                    '-flags',              'low_delay',
+                    '-rtsp_transport',     'tcp']
 
         cmd_tail = [
             '-i',       self.url,
@@ -4868,12 +4838,15 @@ class FFmpegVideoCapture:
                     continue
                     
                 failures = 0
+                # FIX 5: copy frame OUTSIDE the lock — only the pointer
+                # swap happens inside. Was: copy inside lock (blocked READER
+                # and ENCODER for the duration of a 6MB memcopy per frame).
                 frame = np.frombuffer(_buf, dtype=np.uint8
                                      ).reshape((self.height, self.width, 3)).copy()
                 with self.lock:
-                    self.latest_frame  = frame
+                    self.latest_frame   = frame          # already a fresh copy
                     self._last_frame_ts = time.time()
-                    self._frame_id     = getattr(self, '_frame_id', 0) + 1
+                    self._frame_id      = getattr(self, '_frame_id', 0) + 1
                     
             try:
                 proc.kill()
@@ -4889,7 +4862,7 @@ class FFmpegVideoCapture:
         with self.lock:
             if self.latest_frame is None:
                 return False, None
-            if time.time() - getattr(self, '_last_frame_ts', time.time()) > 20.0:
+            if time.time() - getattr(self, '_last_frame_ts', time.time()) > 8.0:  # FIX 3
                 return False, None
             # Only return True when a genuinely NEW frame arrived (prevents READER
             # from spinning at CPU-max speed copying the same 6 MB frame repeatedly).
@@ -4898,7 +4871,11 @@ class FFmpegVideoCapture:
             if cur_id == last_id:
                 return False, None          # same frame as last read — tell caller to wait
             self._last_read_id = cur_id
-            return True, self.latest_frame.copy()
+            # FIX 6: no second .copy() — _capture_loop already produced
+            # a fresh copy outside the lock. Returning the same object
+            # is safe because _capture_loop always creates a NEW frame
+            # object on every iteration (never mutates latest_frame).
+            return True, self.latest_frame
             
     def release(self):
         self.running = False

@@ -94,18 +94,28 @@ class PanelLogger:
     # ── INTERNAL ─────────────────────────────────────────────────────────────
 
     def _setup_daily(self, base_dir):
-        """Ensure daily log file is open."""
+        """Ensure daily log file path is current. Called at init and on every write."""
         self._base_dir = base_dir
         date_str = datetime.now().strftime("%Y-%m-%d")
         date_folder = os.path.join(base_dir, date_str)
         os.makedirs(date_folder, exist_ok=True)
         self._daily_path = os.path.join(date_folder,
                                         f"app_log_{date_str}.txt")
+        self._current_log_date = date_str
 
     def _daily(self, msg: str):
-        """Write a line to the daily log."""
+        """Write a line to the daily log. Auto-rotates at midnight."""
         if not self._daily_path:
             return
+        # Midnight rotation: if date has changed, open new file
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != getattr(self, '_current_log_date', today):
+            self._setup_daily(self._base_dir)
+            self._daily_raw(
+                f"\n{'═'*70}\n"
+                f"DATE CHANGED → {today}  (log rotated at midnight)\n"
+                f"{'═'*70}\n"
+            )
         line = f"[{_ts()}] {msg}\n"
         try:
             with open(self._daily_path, "a", encoding="utf-8") as f:

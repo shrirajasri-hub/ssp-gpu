@@ -2353,12 +2353,10 @@ class Camera2OCR:
         import traceback as _tb
 
         print(
-            f"[OCR] Worker started | "
-            f"session={self._panel_session_id} | "
-            f"queue_size={self._ocr_crop_queue.qsize()}",
+            f"[CAM2-OCR] 🚀 OCR Worker Started "
+            f"id(self)={id(self)}",
             flush=True
-        )   # FIX 5a: startup diagnostic
-        print(f"[CAM2-OCR] Worker thread id={id(self)}", flush=True)
+        )
 
         # ── TASK 2: outer immortal loop — worker NEVER exits silently ─────────
         while self.running:
@@ -2405,15 +2403,23 @@ class Camera2OCR:
                     _raw = None
                     try:
                         # 1. Log queue state before blocking
-                        print(f"[CAM2-OCR] Waiting for queue item. "
-                              f"Queue={self._ocr_crop_queue.qsize()}",
-                              flush=True)
+                        print(
+                            f"[CAM2-OCR] Waiting for crop "
+                            f"Queue={self._ocr_crop_queue.qsize()}",
+                            flush=True
+                        )
 
                         # 2. Block until a crop arrives (1s timeout to check running)
                         try:
                             _raw = self._ocr_crop_queue.get(timeout=1)
                         except _queue_mod.Empty:
                             continue
+
+                        print(
+                            f"[CAM2-OCR] ✅ Crop received "
+                            f"Queue={self._ocr_crop_queue.qsize()}",
+                            flush=True
+                        )
 
                         # TASK 1 / FINAL AUDIT FIX: unpack dict — always use
                         # item["panel_folder"], NEVER self.panel_folder.
@@ -2476,14 +2482,47 @@ class Camera2OCR:
                                                 interpolation=_cv2.INTER_CUBIC)
 
                         # 6. Call PaddleOCR
-                        print("[CAM2-OCR] Calling PaddleOCR", flush=True)
+                        if self.paddle_reader is None:
+                            print(
+                                "[CAM2-OCR] ❌ paddle_reader is None",
+                                flush=True
+                            )
+                            self._ocr_crop_queue.task_done()
+                            continue
+
+                        print(
+                            f"[CAM2-OCR] Reader OK "
+                            f"id={id(self.paddle_reader)}",
+                            flush=True
+                        )
+
+                        print(
+                            "[CAM2-OCR] 🔍 Calling PaddleOCR",
+                            flush=True
+                        )
                         print(f"[CAM2-OCR] Input size={ocr_input.shape[1]}x"
                               f"{ocr_input.shape[0]}", flush=True)
 
-                        result = self.paddle_reader.predict(ocr_input)
+                        try:
+                            result = self.paddle_reader.predict(ocr_input)
+                        except Exception as e:
+                            import traceback
+                            print(
+                                f"[CAM2-OCR] ❌ OCR ERROR: {e}",
+                                flush=True
+                            )
+                            traceback.print_exc()
+                            self._ocr_crop_queue.task_done()
+                            continue
 
-                        print("[CAM2-OCR] PaddleOCR returned", flush=True)
-                        print(f"[CAM2-OCR] Raw OCR Result = {result}", flush=True)
+                        print(
+                            "[CAM2-OCR] ✅ PaddleOCR returned",
+                            flush=True
+                        )
+                        print(
+                            f"[CAM2-OCR] Raw OCR Result={result}",
+                            flush=True
+                        )
 
                         # 7. Extract text
                         raw_text = ''
@@ -2509,7 +2548,7 @@ class Camera2OCR:
                         if raw_text:
                             print(f"[OCR] Candidate    = {repr(raw_text)}", flush=True)
                         if serial:
-                            print(f"[OCR] Corrected    = {serial}", flush=True)
+                            print(f"[CAM2-OCR] Corrected Serial={serial}", flush=True)
                         else:
                             reason = ("empty text" if not raw_text
                                       else f"validation failed for {repr(raw_text)}")
@@ -2558,7 +2597,7 @@ class Camera2OCR:
                                      + f"{_n.month:02d}{_n.year%100:02d}"
                                      + self.code_confirmed
                                      + self.letter_confirmed)
-                            print(f"[CAM2-OCR] SERIAL CONFIRMED = {final}",
+                            print(f"[CAM2-OCR] SERIAL CONFIRMED={final}",
                                   flush=True)
                             # TASK 1: always pass item_folder + item_session —
                             # NEVER self.panel_folder — to prevent Panel A→B leak.
