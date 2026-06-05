@@ -1,59 +1,51 @@
 @echo off
-title Panel Vision
-
-REM ── Go to the folder where this bat file lives ────────────────
 cd /d "%~dp0"
-echo [INFO] App folder: %~dp0
 
-REM ── Check py is available ─────────────────────────────────────
-py --version >nul 2>&1
+REM Write all output to a log file you can read after
+set LOGFILE=%~dp0startup_log.txt
+echo Panel Vision Startup Log > "%LOGFILE%"
+echo Time: %date% %time% >> "%LOGFILE%"
+echo Folder: %~dp0 >> "%LOGFILE%"
+
+REM Check py
+echo Checking py... >> "%LOGFILE%"
+py --version >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
-    echo.
-    echo ============================================
-    echo  ERROR: py not found
-    echo  Install Python from https://python.org
-    echo ============================================
-    pause
-    exit /b 1
+    echo FAILED: py not found >> "%LOGFILE%"
+    echo py not found - check Python install >> "%LOGFILE%"
+    goto END
 )
-echo [INFO] Python found:
-py --version
+echo py OK >> "%LOGFILE%"
 
-REM ── Check app_vision.py exists ────────────────────────────────
+REM Check app_vision.py
+echo Checking app_vision.py... >> "%LOGFILE%"
 if not exist "app_vision.py" (
-    echo.
-    echo ============================================
-    echo  ERROR: app_vision.py not found
-    echo  Move this bat file into the same folder
-    echo  as app_vision.py
-    echo  Current folder: %~dp0
-    echo ============================================
-    pause
-    exit /b 1
+    echo FAILED: app_vision.py not found in %~dp0 >> "%LOGFILE%"
+    goto END
 )
-echo [INFO] app_vision.py found
+echo app_vision.py found >> "%LOGFILE%"
 
-REM ── Activate venv if present ──────────────────────────────────
+REM Activate venv if exists
 if exist "venv\Scripts\activate.bat" (
-    echo [INFO] Activating venv...
+    echo Activating venv >> "%LOGFILE%"
     call venv\Scripts\activate.bat
 ) else (
-    echo [INFO] No venv - using system Python
+    echo No venv using system Python >> "%LOGFILE%"
 )
 
-REM ── Wait for network ──────────────────────────────────────────
-echo [INFO] Waiting 10s for network...
+REM Wait for network
+echo Waiting for network >> "%LOGFILE%"
 timeout /t 10 /nobreak >nul
 
-REM ── Start the app ─────────────────────────────────────────────
-echo [INFO] Starting Panel Vision...
-echo [INFO] Open browser at http://localhost:5000
-echo.
-py app_vision.py
+REM Start app
+echo Starting app_vision.py >> "%LOGFILE%"
+py app_vision.py >> "%LOGFILE%" 2>&1
 
-REM ── If we reach here the app stopped ─────────────────────────
-echo.
-echo ============================================
-echo  App stopped. See error above.
-echo ============================================
-pause
+echo App stopped >> "%LOGFILE%"
+
+:END
+echo. >> "%LOGFILE%"
+echo Done >> "%LOGFILE%"
+
+REM Open the log file so you can read it
+notepad "%LOGFILE%"
