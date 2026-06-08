@@ -3839,20 +3839,10 @@ def _stream(cap, native_fps=None):
     # ── Thread 2: ENCODER (stream thread — never blocked by inference) ──
     def encoder():
         last_enc_time  = time.time()
-        last_frame_ts  = time.time()   # track when last real frame arrived
-        STALE_BANNER   = 8.0           # show reconnecting banner after 8s no frame
-        # (was 4s — too short; brief IDR gaps or LAN jitter showed banner)
+        last_frame_ts  = time.time()
         MIN_INTERVAL   = 1.0 / STREAM_FPS_CAP
         STREAM_W       = STREAM_UI_WIDTH
-
-        def _reconnecting_banner():
-            """Return a JPEG banner shown when Camera-1 has no live frame."""
-            blank = np.zeros((960, STREAM_W, 3), dtype=np.uint8)
-            cv2.rectangle(blank, (0, 0), (STREAM_W, 960), (0, 80, 200), 8)
-            cv2.putText(blank, 'CAMERA 1 RECONNECTING...',
-                        (60, 480), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0, 80, 200), 3)
-            _, b = cv2.imencode('.jpg', blank, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            return b.tobytes()
+        last_good_jpeg = [None]   # cache last good frame — served when camera drops
 
         while running.is_set() and state.stream_generation == my_generation:
             elapsed = time.time() - last_enc_time
@@ -3864,19 +3854,18 @@ def _stream(cap, native_fps=None):
                 frame = raw_frame[0]
 
             if frame is None:
-                # No frame at all — check how long we've been waiting
-                if time.time() - last_frame_ts > STALE_BANNER:
-                    # Push reconnecting banner so browser doesn't freeze
+                # Camera dropped — serve last good frame frozen (no black screen)
+                if last_good_jpeg[0] is not None:
                     try:
                         stream_q.get_nowait()
                     except _queue.Empty:
                         pass
-                    stream_q.put_nowait(_reconnecting_banner())
+                    stream_q.put_nowait(last_good_jpeg[0])
                     last_enc_time = time.time()
                 time.sleep(0.1)
                 continue
 
-            last_frame_ts = time.time()    # real frame arrived — reset
+            last_frame_ts = time.time()
             h, w = frame.shape[:2]
             sh   = int(h * (STREAM_W / w))
 
@@ -3922,6 +3911,7 @@ def _stream(cap, native_fps=None):
                 _, buf = cv2.imencode('.jpg', small,
                                       [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 jpg = buf.tobytes()
+                last_good_jpeg[0] = jpg   # cache — served when camera drops
 
                 try: stream_q.get_nowait()
                 except _queue.Empty: pass
